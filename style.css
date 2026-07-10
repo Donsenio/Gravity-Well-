@@ -11,31 +11,12 @@ body {
   padding: 16px;
 }
 
-#gw-container {
-  width: 100%;
-  max-width: 1100px;
-}
+#gw-container { width: 100%; max-width: 1100px; }
 
-#gw-header {
-  text-align: center;
-  margin-bottom: 14px;
-}
-
-#gw-header h1 {
-  font-size: 22px;
-  letter-spacing: 3px;
-  color: #7ecfff;
-  font-weight: 500;
-}
-
+#gw-header { text-align: center; margin-bottom: 14px; }
+#gw-header h1 { font-size: 22px; letter-spacing: 3px; color: #7ecfff; font-weight: 500; }
 #gw-header h1 span { color: #e87a30; }
-
-#gw-header p {
-  font-size: 11px;
-  color: #445566;
-  margin-top: 4px;
-  letter-spacing: 1px;
-}
+#gw-header p { font-size: 11px; color: #445566; margin-top: 4px; letter-spacing: 1px; }
 
 #gw-wrap {
   width: 100%;
@@ -45,23 +26,123 @@ body {
   position: relative;
 }
 
-#gw-canvas {
-  display: block;
-  width: 100%;
-  cursor: crosshair;
-  outline: none;
-}
+#gw-canvas { display: block; width: 100%; cursor: crosshair; outline: none; }
 
 #gw-hud {
-  position: absolute;
-  top: 10px; left: 14px;
-  font-size: 11px;
-  color: #8ab4d4;
-  pointer-events: none;
-  line-height: 1.9;
+  position: absolute; top: 10px; left: 14px;
+  font-size: 11px; color: #8ab4d4;
+  pointer-events: none; line-height: 1.9;
 }
 
 #gw-status {
+  position: absolute; top: 10px; right: 14px;
+  font-size: 11px; color: #8ab4d4;
+  text-align: right; pointer-events: none; line-height: 1.9;
+}
+
+#gw-msg {
+  position: absolute; bottom: 16px; left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px; color: #fff;
+  background: rgba(0, 0, 0, 0.8);
+  padding: 6px 18px; border-radius: 20px;
+  pointer-events: none; white-space: nowrap;
+  opacity: 0; transition: opacity 0.4s;
+}
+
+#gw-bar {
+  background: #0d1117;
+  padding: 8px 12px;
+  display: flex; align-items: center; gap: 14px;
+  font-size: 11px; color: #445566;
+  border-top: 0.5px solid #1a2030;
+  flex-wrap: wrap;
+  border-radius: 0 0 12px 12px;
+}
+
+#gw-bar .key { color: #8ab4d4; }
+
+#gw-restart {
+  margin-left: auto;
+  font-family: monospace; font-size: 11px;
+  color: #8ab4d4; background: transparent;
+  border: 0.5px solid #334455; border-radius: 6px;
+  padding: 4px 12px; cursor: pointer;
+}
+#gw-restart:hover { background: #1a2535; }
+
+#gw-focus-hint {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(7, 9, 15, 0.82);
+  cursor: pointer;
+}
+#gw-focus-hint p {
+  font-size: 14px; color: #7ecfff;
+  border: 0.5px solid #334;
+  padding: 10px 24px; border-radius: 20px;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+/* ---------- Upgrade shop ---------- */
+#gw-shop {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4, 6, 10, 0.85);
+  z-index: 10;
+}
+#gw-shop.hidden { display: none; }
+
+#gw-shop-panel {
+  background: #0d1117;
+  border: 0.5px solid #2a3a55;
+  border-radius: 10px;
+  padding: 18px 20px;
+  width: min(440px, 92%);
+  max-height: 90%;
+  overflow-y: auto;
+}
+
+#gw-shop-panel h2 {
+  font-size: 15px; letter-spacing: 2px;
+  color: #7ecfff; font-weight: 500;
+  margin-bottom: 4px;
+}
+
+#shop-credits { font-size: 12px; color: #d6a02a; margin-bottom: 14px; }
+
+.shop-item {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 0.5px solid #1a2535;
+}
+.shop-item:last-child { border-bottom: none; }
+
+.shop-item .info { flex: 1; }
+.shop-item .name { font-size: 12px; color: #cfe4f4; }
+.shop-item .desc { font-size: 10px; color: #556a80; margin-top: 2px; }
+.shop-item .level { font-size: 10px; color: #2adf6e; margin-top: 2px; }
+
+.shop-item button {
+  font-family: monospace; font-size: 11px;
+  color: #d6a02a; background: transparent;
+  border: 0.5px solid #55452a; border-radius: 6px;
+  padding: 5px 12px; cursor: pointer;
+  white-space: nowrap;
+}
+.shop-item button:hover:not(:disabled) { background: #2a2415; }
+.shop-item button:disabled { color: #445; border-color: #223; cursor: default; }
+
+#shop-close {
+  margin-top: 14px;
+  width: 100%;
+  font-family: monospace; font-size: 11px;
+  color: #8ab4d4; background: transparent;
+  border: 0.5px solid #334455; border-radius: 6px;
+  padding: 7px; cursor: pointer;
+}
+#shop-close:hover { background: #1a2535; }#gw-status {
   position: absolute;
   top: 10px; right: 14px;
   font-size: 11px;
