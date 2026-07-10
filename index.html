@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gravity Well: Reclaimed</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="gw-container">
+    <header id="gw-header">
+      <h1>GRAVITY WELL: <span>RECLAIMED</span></h1>
+      <p>Explore the unknown. Build your empire. Fight for every dirtball.</p>
+    </header>
+
+    <div id="gw-wrap">
+      <canvas id="gw-canvas" tabindex="0"></canvas>
+      <div id="gw-hud">
+        <div>HULL <span id="h-hull">100</span>%</div>
+        <div>SCORE <span id="h-score">0</span></div>
+        <div>PLANETS <span id="h-planets">0/5</span></div>
+      </div>
+      <div id="gw-status">
+        <div id="h-credits">CREDITS: 0</div>
+        <div id="h-enemies">HOSTILES: 0</div>
+        <div id="h-state">FLYING</div>
+      </div>
+      <div id="gw-msg"></div>
+      <div id="gw-focus-hint"><p>Click here to play</p></div>
+    </div>
+
+    <div id="gw-bar">
+      <span class="key">W/&uarr;</span> thrust
+      <span class="key">A/D &larr;/&rarr;</span> rotate
+      <span class="key">SPACE</span> shoot
+      <span class="key">L</span> land near planet
+      <button id="gw-restart">&#8635; Restart</button>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
