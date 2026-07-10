@@ -58,7 +58,12 @@ const CONFIG = {
     vorath:  { hull: 30, shootRange: 250, aggression: 0.15, speedMult: 1.25, color: '#9f6ad6', label: 'VORATH' },
   },
   paleTurret: { range: 260, cooldown: 110 },  // Pale-owned planets shoot back
-  freighter: { speed: 1.2, hull: 60 },
+  freighter: {
+    speed: 0.6,                    // slow and vulnerable — escort them!
+    hull: 60,
+    attackRange: 200,              // freighters shoot back at nearby hostiles
+    attackCooldown: 70,
+  },
   colonyTurret: { range: 220, cooldown: 90 }, // your colonies, once upgraded
   economy: {
     creditTickFrames: 300,
@@ -268,6 +273,7 @@ function genPlanets() {
       value: 50 + Math.floor(Math.random() * 80),
       baseHull: 0,             // enemy base health once seized
       turretTimer: 0,          // used by pale turrets AND player colony turrets
+      hasTurret: false,        // home base gets a free turret
     });
   }
 }
@@ -275,6 +281,13 @@ function genPlanets() {
 function init() {
   genStars();
   genPlanets();
+
+  // Your HOME base: pre-claimed, defended, and where freighters launch from
+  const home = planets[0];
+  home.name = 'HOME';
+  home.owner = 'player';
+  home.hasTurret = true;
+  home.revealed = true;
 
   ship = {
     x: planets[0].x - 180,
@@ -299,10 +312,8 @@ function init() {
   shopOpen = false;
   shopEl.classList.add('hidden');
 
-  planets[0].revealed = true;
-
   spawnWave(3);
-  flashMsg('Scout the sector — three factions want these planets', 3500);
+  flashMsg('HOME is secure. Scout the sector — three factions want these planets', 3500);
   updateHUD();
 }
 
@@ -331,15 +342,31 @@ function spawnWave(n) {
 }
 
 function spawnFreighter(planet) {
+  // Launch from the nearest player-owned colony (HOME at the start)
+  let src = null, sd = Infinity;
+  for (const q of planets) {
+    if (q.owner === 'player') {
+      const d = dist(q, planet);
+      if (d < sd) { sd = d; src = q; }
+    }
+  }
+  let fx = ship.x, fy = ship.y, fromName = 'your position';
+  if (src) {
+    const a = Math.atan2(planet.y - src.y, planet.x - src.x);
+    fx = src.x + Math.cos(a) * (src.r + 14);
+    fy = src.y + Math.sin(a) * (src.r + 14);
+    fromName = src.name;
+  }
   freighters.push({
-    x: ship.x, y: ship.y,
+    x: fx, y: fy,
     tx: planet.x, ty: planet.y,
     planet,
     hull: CONFIG.freighter.hull,
     arrived: false,
     r: 9,
+    shootTimer: 0,
   });
-  flashMsg('Freighter dispatched to ' + planet.name, 2500);
+  flashMsg('Freighter launched from ' + fromName + ' to ' + planet.name, 2500);
 }
 
 /* ---------- 5. UPDATE ---------- */
@@ -382,11 +409,13 @@ function fireShot(obj, isEnemy) {
   });
 }
 
-function fireTurretShot(fromX, fromY, target, isEnemy) {
+function fireTurretShot(fromX, fromY, target, isEnemy, spawnOffset = 12) {
+  // spawnOffset must clear the firing object's radius, otherwise the
+  // shot spawns inside it and instantly self-destructs (the Phase 3.0 bug)
   const a = Math.atan2(target.y - fromY, target.x - fromX);
   bullets.push({
-    x: fromX + Math.cos(a) * 8,
-    y: fromY + Math.sin(a) * 8,
+    x: fromX + Math.cos(a) * spawnOffset,
+    y: fromY + Math.sin(a) * spawnOffset,
     vx: Math.cos(a) * 3.4,
     vy: Math.sin(a) * 3.4,
     life: 0.8,
@@ -535,6 +564,20 @@ function updateFreighters() {
       f.x += (dx / d) * spd;
       f.y += (dy / d) * spd;
     }
+
+    // Freighters defend themselves with a light cannon
+    if (f.shootTimer > 0) f.shootTimer--;
+    if (f.shootTimer <= 0) {
+      let nearest = null, nd = Infinity;
+      for (const e of enemies) {
+        const ed = dist(f, e);
+        if (ed < CONFIG.freighter.attackRange && ed < nd) { nd = ed; nearest = e; }
+      }
+      if (nearest) {
+        fireTurretShot(f.x, f.y, nearest, false, f.r + 6);
+        f.shootTimer = CONFIG.freighter.attackCooldown;
+      }
+    }
   }
   freighters = freighters.filter(f => !f.arrived || f.planet.owner === 'player');
 }
@@ -633,13 +676,14 @@ function updatePlanetTurrets() {
     // Pale Syndicate planets shoot at the player
     if (p.owner === 'pale' && !ship.dead && !ship.landing) {
       if (p.turretTimer <= 0 && dist(p, ship) < p.r + CONFIG.paleTurret.range) {
-        fireTurretShot(p.x, p.y, ship, true);
+        fireTurretShot(p.x, p.y, ship, true, p.r + 6);
         p.turretTimer = CONFIG.paleTurret.cooldown;
       }
     }
 
-    // Player colonies with the turret upgrade shoot at hostiles
-    if (p.owner === 'player' && turretsOwned()) {
+    // Player colonies shoot at hostiles: HOME always has a turret,
+    // other colonies need the Colony Turrets upgrade
+    if (p.owner === 'player' && (p.hasTurret || turretsOwned())) {
       if (p.turretTimer <= 0) {
         let nearest = null, nd = 9999;
         for (const e of enemies) {
@@ -647,7 +691,7 @@ function updatePlanetTurrets() {
           if (d < p.r + turretRange() && d < nd) { nd = d; nearest = e; }
         }
         if (nearest) {
-          fireTurretShot(p.x, p.y, nearest, false);
+          fireTurretShot(p.x, p.y, nearest, false, p.r + 6);
           p.turretTimer = CONFIG.colonyTurret.cooldown;
         }
       }
@@ -686,6 +730,21 @@ function updateBullets() {
         ship.dead = true;
         gameState = 'dead';
         flashMsg('Hull breach — click Restart to try again', 9999);
+      }
+    } else if (b.isEnemy) {
+      // Enemy fire can destroy freighters in transit
+      for (const f of freighters) {
+        if (!f.arrived && dist(b, f) < f.r + 5) {
+          f.hull -= 15; b.life = 0;
+          spawnPart(f.x, f.y, '#7ed4a0', 8);
+          if (f.hull <= 0) {
+            spawnPart(f.x, f.y, '#e87030', 30);
+            f.planet.building = false;
+            f.arrived = true;   // flags it for cleanup
+            flashMsg('Freighter destroyed en route to ' + f.planet.name + '!', 2500);
+          }
+          break;
+        }
       }
     } else if (!b.isEnemy) {
       for (const e of enemies) {
@@ -905,7 +964,7 @@ function drawPlanets() {
     }
 
     // Player colony turret indicator
-    if (p.owner === 'player' && turretsOwned()) {
+    if (p.owner === 'player' && (p.hasTurret || turretsOwned())) {
       ctx.fillStyle = '#2adf6e';
       ctx.beginPath();
       ctx.arc(sc.x, sc.y - p.r - 3, 2, 0, Math.PI * 2);
@@ -958,6 +1017,12 @@ function drawMinimap() {
     }
     ctx.fillStyle = p.owner === 'player' ? '#2adf6e' : p.owner ? CONFIG.factions[p.owner].color : p.strokeColor;
     ctx.beginPath(); ctx.arc(px, py, 3, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // Freighters in transit
+  ctx.fillStyle = '#7ed4a0';
+  for (const f of freighters) {
+    if (!f.arrived) ctx.fillRect(mx + f.x * sx - 1.5, my + f.y * sy - 1.5, 3, 3);
   }
 
   ctx.fillStyle = '#7ecfff';
