@@ -13,7 +13,6 @@ Pilot your ship, scout hidden planets, and be the first to claim 4 of 5.
 | W / ↑ | Thrust |
 | A / D or ← / → | Rotate |
 | Space | Shoot |
-| L | Land / flag a planet (when close) |
 
 Click the game to give it keyboard focus. Use the Restart button any time.
 
