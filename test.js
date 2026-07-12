@@ -178,5 +178,41 @@ console.log('  gameState=' + t.gameState + ' enemies=' + t.enemies.length +
 const owners = t.planets.map(p => p.owner || '-').join(',');
 console.log('  owners: ' + owners);
 
+console.log('=== 8. AI expansion pipeline: fighters land, flag, freighters colonize ===');
+t.init();
+let aiFlagged = false, aiColonized = false;
+for (let i = 0; i < 45000; i++) {
+  // Keep the player alive and out of the way so the AI can operate freely
+  if (i % 30 === 0) {
+    t.setShip({ x: 40, y: 40, vx: 0, vy: 0, hull: 100, dead: false, landedOn: null });
+    for (const p of t.planets) {
+      if (p.owner === 'player') for (const k of Object.keys(p.structures)) {
+        p.structures[k].hp = p.structures[k].maxHp;
+      }
+    }
+  }
+  try { t.update(); } catch (e) { console.error('FRAME ERR test8:', e.message); frameErrors++; break; }
+  for (const p of t.planets) {
+    if (p.flaggedBy && p.flaggedBy !== 'player') aiFlagged = true;
+    if (p.owner && p.owner !== 'player' && t.planets.indexOf(p) > 3) aiColonized = true;
+  }
+  if (aiColonized) { console.log('  AI colonized a neutral planet at frame ' + i); break; }
+}
+assert(aiFlagged, 'an AI fighter landed and planted a flag');
+assert(aiColonized, 'an AI freighter completed a colonization');
+
+console.log('=== 9. Fighter respawn: shipyards construct a replacement ===');
+t.init();
+framesPeaceful(9000, 'build up home lab');
+const home9 = t.planets[0];
+console.log('  home has lab=' + !!home9.structures.lab + ' spacedock=' + !!home9.structures.spacedock);
+home9.finished = 80;
+t.setShip({ x: home9.x - home9.r - 40, y: home9.y, vx: 3, vy: 0, angle: 0, dead: false, landedOn: null });
+framesPeaceful(30, 'crash');
+assert(t.ship.dead === true, 'high-speed impact destroys the fighter');
+framesPeaceful(400, 'await replacement');
+console.log('  dead=' + t.ship.dead + ' gameState=' + t.gameState + ' landedOn=' + (t.ship.landedOn ? t.ship.landedOn.name : 'null'));
+assert(t.ship.dead === false && t.gameState === 'playing', 'a new fighter was constructed and the war continues');
+
 console.log('\n' + (frameErrors === 0 ? 'ALL CHECKS PASSED' : frameErrors + ' PROBLEM(S) FOUND'));
 process.exit(frameErrors === 0 ? 0 : 1);

@@ -34,6 +34,19 @@ const CONFIG = {
     landSpeed: 0.55,        // at or below this (nose out) = safe landing
     repairRate: 0.09,       // hull repaired per frame while landed at your base
     repairCost: 0.025,      // finished materials consumed per frame of repair
+    shields: 60,            // absorbs damage before the hull (original manual)
+    shieldRegen: 0.012,     // slow passive regen; fast while landed at a base
+  },
+  missiles: {
+    max: 5,
+    speed: 4.6,
+    turnRate: 0.055,        // homing strength
+    damage: 45,
+    cooldown: 45,
+    rearmCost: 3,           // finished materials per missile when rearming
+  },
+  respawn: {
+    delayFrames: 300,       // labs/space docks construct you a new fighter
   },
   research: {
     ratePerLab: 0.00013,    // labs work cooperatively — more labs, faster tech
@@ -154,16 +167,58 @@ let keys = {};
 let shopOpen = false;
 
 canvas.addEventListener('keydown', e => {
+  Snd.ensure();
+  if (e.key === 'm' || e.key === 'M') { Snd.muted = !Snd.muted; flashMsg(Snd.muted ? 'Sound off' : 'Sound on', 1200); return; }
   if (e.key === 'u' || e.key === 'U') { toggleShop(); e.preventDefault(); return; }
   if (e.key === 'Escape' && shopOpen) { toggleShop(); return; }
   keys[e.key] = true;
   if ([' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
 });
 canvas.addEventListener('keyup', e => { keys[e.key] = false; });
-hint.addEventListener('click', () => { hint.style.display = 'none'; canvas.focus(); });
+hint.addEventListener('click', () => { hint.style.display = 'none'; canvas.focus(); Snd.ensure(); });
 restartBtn.addEventListener('click', () => { init(); canvas.focus(); });
 canvas.addEventListener('focus', () => { hint.style.display = 'none'; });
 shopCloseBtn.addEventListener('click', () => { toggleShop(); canvas.focus(); });
+
+/* ---------- AUDIO (synthesized retro effects, matching the original's
+   sound events: fire, hit, collide, missile, prox, develop, install) ---------- */
+const Snd = {
+  ctx: null, muted: false, proxAt: 0,
+  ensure() {
+    if (this.ctx || this.muted) return;
+    try {
+      const AC = (typeof window !== 'undefined') && (window.AudioContext || window.webkitAudioContext);
+      if (AC) this.ctx = new AC();
+    } catch (e) { this.ctx = null; }
+  },
+  tone(f0, f1, dur, type, vol) {
+    if (!this.ctx || this.muted) return;
+    try {
+      const t = this.ctx.currentTime;
+      const o = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      o.type = type; o.frequency.setValueAtTime(f0, t);
+      o.frequency.exponentialRampToValueAtTime(Math.max(30, f1), t + dur);
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      o.connect(g); g.connect(this.ctx.destination);
+      o.start(t); o.stop(t + dur);
+    } catch (e) {}
+  },
+  fire()    { this.tone(760, 190, 0.07, 'square', 0.025); },
+  hit()     { this.tone(210, 70, 0.1, 'sawtooth', 0.05); },
+  collide() { this.tone(110, 35, 0.35, 'sawtooth', 0.09); },
+  missile() { this.tone(320, 900, 0.3, 'square', 0.045); },
+  prox()    {
+    const now = Date.now();
+    if (now - this.proxAt < 2600) return;
+    this.proxAt = now;
+    this.tone(980, 980, 0.09, 'sine', 0.05);
+    setTimeout(() => this.tone(760, 760, 0.09, 'sine', 0.05), 130);
+  },
+  develop() { this.tone(420, 840, 0.16, 'triangle', 0.06); setTimeout(() => this.tone(560, 1120, 0.16, 'triangle', 0.06), 170); },
+  install() { this.tone(880, 1320, 0.14, 'triangle', 0.06); },
+};
 
 /* ---------- 3. UPGRADES ---------- */
 const UPGRADES = {
@@ -266,9 +321,9 @@ function renderShop() {
 }
 
 /* ---------- 4. GAME STATE ---------- */
-let ship, planets, bullets, enemies, freighters, drones, particles, stars;
+let ship, planets, bullets, enemies, freighters, drones, particles, stars, missiles;
 let score, credits, gameState, shootCooldown, landCooldown, msgTimer;
-let productionTimer, aiFlagTimer;
+let productionTimer, aiFlagTimer, missileCooldown = 0;
 let researchProgress, researchReady;
 
 function dist(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
@@ -393,12 +448,18 @@ function init() {
     angle: 0,
     hull: CONFIG.ship.hull,
     maxHull: CONFIG.ship.hull,
+    shields: CONFIG.ship.shields,
+    maxShields: CONFIG.ship.shields,
+    missiles: CONFIG.missiles.max,
     thrust: 0,
     dead: false,
+    deadTimer: 0,
     landedOn: null,          // planet the fighter is currently landed on
   };
+  missiles = [];
 
   bullets = []; enemies = []; freighters = []; drones = []; particles = [];
+  missiles = [];
   score = 0; credits = 100;
   upgradeLevels = {};
   researchProgress = 0;
@@ -440,6 +501,9 @@ function spawnFighter(faction, nearPlanet) {
     faction,
     targetPlanet: null,
     targetFreighter: null,
+    state: 'hunt',
+    landTimer: 0,
+    strafeDir: Math.random() < 0.5 ? 1 : -1,
     flicker: Math.random() * 100,
   });
 }
@@ -573,12 +637,73 @@ function handleInput() {
 
   if (keys[' '] && shootCooldown <= 0 && canControl && !ship.landedOn) {
     fireShot(ship, false);
+    Snd.fire();
     shootCooldown = fireCooldown();
   }
   if (shootCooldown > 0) shootCooldown--;
+
+  if ((keys['f'] || keys['F']) && missileCooldown <= 0 && canControl && !ship.landedOn) {
+    if (ship.missiles > 0) {
+      fireMissile();
+      missileCooldown = CONFIG.missiles.cooldown;
+    } else {
+      flashMsg('No missiles — rearm at a base', 1500);
+      missileCooldown = 40;
+    }
+  }
+  if (missileCooldown > 0) missileCooldown--;
+}
+
+// In the original, your fighter is just a unit: when it is destroyed,
+// your Labs and Space Docks construct a new one — if your economy can pay.
+function shipDestroyed() {
+  ship.dead = true;
+  ship.landedOn = null;
+  ship.deadTimer = CONFIG.respawn.delayFrames;
+  spawnPart(ship.x, ship.y, '#e87a30', 45);
+  Snd.collide();
+  const yard = respawnYard();
+  if (yard) {
+    flashMsg('Fighter destroyed — ' + yard.name + ' is constructing a replacement...', 4000);
+  } else {
+    flashMsg('Fighter destroyed — no facility can construct a replacement!', 4000);
+  }
+}
+
+function respawnYard() {
+  return planets.find(p =>
+    p.owner === 'player' &&
+    (p.structures.lab || p.structures.spacedock) &&
+    p.finished >= CONFIG.fighterUnit.cost
+  ) || null;
+}
+
+function updateRespawn() {
+  if (!ship.dead || gameState !== 'playing') return;
+  ship.deadTimer--;
+  if (ship.deadTimer > 0) return;
+  const yard = respawnYard();
+  if (!yard) {
+    gameState = 'dead';
+    flashMsg('No Lab or Space Dock can build a new fighter — Restart to try again', 9999);
+    return;
+  }
+  yard.finished -= CONFIG.fighterUnit.cost;
+  const a = Math.random() * Math.PI * 2;
+  ship.x = yard.x + Math.cos(a) * (yard.r + 8);
+  ship.y = yard.y + Math.sin(a) * (yard.r + 8);
+  ship.angle = a;
+  ship.vx = 0; ship.vy = 0;
+  ship.hull = ship.maxHull;
+  ship.shields = ship.maxShields;
+  ship.missiles = CONFIG.missiles.max;
+  ship.dead = false;
+  ship.landedOn = yard;
+  flashMsg('New fighter constructed at ' + yard.name + ' — fitted with all upgrades', 3000);
 }
 
 function updateShip() {
+  if (ship.dead) return;
   if (ship.landedOn) {
     // Pinned to the surface, nose out
     const p = ship.landedOn;
@@ -592,12 +717,22 @@ function updateShip() {
       ship.hull = Math.min(ship.maxHull, ship.hull + CONFIG.ship.repairRate);
       p.finished = Math.max(0, p.finished - CONFIG.ship.repairCost);
     }
+    // Shields recharge quickly and missiles rearm while docked at your base
+    if (p.owner === 'player' && p.structures.base) {
+      ship.shields = Math.min(ship.maxShields, ship.shields + 0.15);
+      if (ship.missiles < CONFIG.missiles.max && p.finished >= CONFIG.missiles.rearmCost) {
+        p.finished -= CONFIG.missiles.rearmCost;
+        ship.missiles++;
+        flashMsg('Missile loaded (' + ship.missiles + '/' + CONFIG.missiles.max + ')', 1200);
+      }
+    }
 
     // Install lab research when landed at a base
     if (researchReady && p.owner === 'player' && p.structures.base) {
       const u = UPGRADES[researchReady];
       upgradeLevels[researchReady] = upgradeLevel(researchReady) + 1;
       u.apply();
+      Snd.install();
       flashMsg('Labs installed ' + u.name + ' LVL ' + upgradeLevel(researchReady) + '!', 3000);
       researchReady = null;
       researchProgress = 0;
@@ -606,8 +741,13 @@ function updateShip() {
     applyGravityTo(ship);
     ship.x += ship.vx; ship.y += ship.vy;
     ship.vx *= CONFIG.ship.drag; ship.vy *= CONFIG.ship.drag;
+    ship.shields = Math.min(ship.maxShields, ship.shields + CONFIG.ship.shieldRegen);
     if (ship.thrust) {
       spawnPart(ship.x - Math.cos(ship.angle) * 12, ship.y - Math.sin(ship.angle) * 12, '#e87030', 2);
+    }
+    // Proximity alert when an enemy closes in
+    for (const e of enemies) {
+      if (dist(e, ship) < 320) { Snd.prox(); break; }
     }
   }
 
@@ -629,10 +769,7 @@ function updateShip() {
       const noseOut = rotDiff < 0.9;
 
       if (speed > CONFIG.ship.crashSpeed) {
-        ship.dead = true;
-        spawnPart(ship.x, ship.y, '#e87a30', 45);
-        gameState = 'dead';
-        flashMsg('Hull breach — too fast! Click Restart', 9999);
+        shipDestroyed();
       } else if (speed <= CONFIG.ship.landSpeed && noseOut) {
         // TOUCHDOWN
         ship.landedOn = p;
@@ -661,10 +798,9 @@ function updateShip() {
           ship.vy += ny * inward * 1.4;
         }
         ship.angle = outward;   // the ship "often settles to the proper orientation"
+        Snd.collide();
         if (ship.hull <= 0) {
-          ship.dead = true;
-          gameState = 'dead';
-          flashMsg('Hull breach — click Restart to try again', 9999);
+          shipDestroyed();
         } else {
           flashMsg(noseOut ? 'Too fast — bleed off more speed' : 'Bad rotation — nose away from the planet', 1800);
         }
@@ -756,35 +892,16 @@ function updateProduction() {
 }
 
 /* --- AI factions choose expansion targets --- */
+// AI factions no longer flag planets abstractly — their fighters must
+// physically fly to a neutral planet and land, just like the player.
+// This function only expires stale claims so planets don't lock forever.
 function updateAiFlags() {
-  aiFlagTimer++;
-
-  // Stale AI claims expire so planets don't get locked forever
   for (const p of planets) {
     if (p.flaggedBy && p.flaggedBy !== 'player' && !p.owner) {
       p.flagAge = (p.flagAge || 0) + 1;
-      if (p.flagAge > 3600) { p.flaggedBy = null; p.flagAge = 0; }
+      if (p.flagAge > 4200) { p.flaggedBy = null; p.flagAge = 0; }
     } else {
       p.flagAge = 0;
-    }
-  }
-
-  if (aiFlagTimer < CONFIG.aiFlagFrames) return;
-  aiFlagTimer = 0;
-
-  for (const facName of ['ashkari', 'pale', 'vorath']) {
-    // Can this faction even expand? Needs at least one freighter or the means to build one
-    const hasFreighter = freighters.some(f => f.owner === facName);
-    const hasEconomy = planets.some(p => p.owner === facName && p.structures.colony);
-    if (!hasFreighter && !hasEconomy) continue;
-
-    const alreadyFlagging = planets.some(p => p.flaggedBy === facName && !p.owner);
-    if (alreadyFlagging) continue;
-
-    const neutral = planets.filter(p => !p.owner && !p.flaggedBy);
-    if (neutral.length > 0) {
-      const pick = neutral[Math.floor(Math.random() * neutral.length)];
-      pick.flaggedBy = facName;
     }
   }
 }
@@ -906,6 +1023,81 @@ function moveToward(obj, target, spd) {
   }
 }
 
+function fireMissile() {
+  ship.missiles--;
+  Snd.missile();
+  // Lock the nearest enemy within range at launch
+  let lock = null, ld = 520;
+  for (const e of enemies) {
+    const d = dist(ship, e);
+    if (d < ld) { ld = d; lock = e; }
+  }
+  missiles.push({
+    x: ship.x + Math.cos(ship.angle) * 15,
+    y: ship.y + Math.sin(ship.angle) * 15,
+    vx: Math.cos(ship.angle) * CONFIG.missiles.speed + ship.vx * 0.4,
+    vy: Math.sin(ship.angle) * CONFIG.missiles.speed + ship.vy * 0.4,
+    target: lock,
+    life: 1,
+  });
+}
+
+function updateMissiles() {
+  for (const m of missiles) {
+    m.life -= 0.006;
+
+    // Homing: white missiles steer toward their locked target
+    if (m.target && m.target.hull > 0) {
+      const want = Math.atan2(m.target.y - m.y, m.target.x - m.x);
+      const cur = Math.atan2(m.vy, m.vx);
+      let diff = ((want - cur + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      const turn = Math.max(-CONFIG.missiles.turnRate, Math.min(CONFIG.missiles.turnRate, diff));
+      const spd = Math.sqrt(m.vx * m.vx + m.vy * m.vy);
+      const na = cur + turn;
+      m.vx = Math.cos(na) * spd;
+      m.vy = Math.sin(na) * spd;
+    } else {
+      m.target = null;
+    }
+    m.x += m.vx; m.y += m.vy;
+
+    // Impact: enemy fighters
+    for (const e of enemies) {
+      if (dist(m, e) < e.r + 6) {
+        e.hull -= CONFIG.missiles.damage;
+        m.life = 0;
+        spawnPart(e.x, e.y, '#fff', 20);
+        Snd.hit();
+        if (e.hull <= 0) {
+          spawnPart(e.x, e.y, CONFIG.factions[e.faction].color, 30);
+          score += 150; credits += 15;
+          e.hull = -999;
+        }
+        break;
+      }
+    }
+    if (m.life <= 0) continue;
+
+    // Impact: enemy structures, then planet cores
+    for (const p of planets) {
+      if (p.owner && p.owner !== 'player') {
+        for (const type of Object.keys(p.structures)) {
+          if (dist(m, structPos(p, type)) < 15) {
+            damageStructure(p, type, 40, m.x, m.y);
+            m.life = 0;
+            Snd.hit();
+            break;
+          }
+        }
+      }
+      if (m.life <= 0) break;
+      if (dist(m, p) < p.r * 0.28) { m.life = 0; spawnPart(m.x, m.y, '#fff', 10); break; }
+    }
+  }
+  enemies = enemies.filter(e => e.hull > -900);
+  missiles = missiles.filter(m => m.life > 0 && m.x > -100 && m.x < WORLD_W + 100 && m.y > -100 && m.y < WORLD_H + 100);
+}
+
 function spawnDrone(p) {
   drones.push({
     planet: p,
@@ -940,96 +1132,187 @@ function updateDrones() {
 
 function updateEnemies() {
   for (const e of enemies) {
-    applyGravityTo(e);
     const fac = CONFIG.factions[e.faction];
+    e.flicker += 1;
+    if (e.shootTimer > 0) e.shootTimer--;
 
-    // Priority 1: intercept enemy (player) freighters nearby
-    if (!e.targetFreighter || e.targetFreighter.hull <= 0) {
-      e.targetFreighter = null;
-      if (Math.random() < fac.aggression * 0.03) {
-        for (const f of freighters) {
-          if (f.owner === 'player' && dist(e, f) < 420) { e.targetFreighter = f; break; }
-        }
+    /* --- LANDED: sitting on a planet planting a flag (vulnerable!) --- */
+    if (e.state === 'landed') {
+      const p = e.targetPlanet;
+      if (!p || p.owner || (p.flaggedBy && p.flaggedBy !== e.faction)) {
+        // Beaten to it — lift off
+        e.state = 'hunt'; e.targetPlanet = null;
+        continue;
       }
+      // Pinned to the rim, nose out
+      const a = Math.atan2(e.y - p.y, e.x - p.x);
+      e.x = p.x + Math.cos(a) * (p.r + 7);
+      e.y = p.y + Math.sin(a) * (p.r + 7);
+      e.vx = 0; e.vy = 0;
+      e.angle = a;
+      e.landTimer--;
+      if (e.landTimer <= 0) {
+        p.flaggedBy = e.faction;
+        if (p.revealed) flashMsg(p.name + ' flagged by ' + fac.label + ' — their freighters are coming', 2800);
+        // Lift off
+        e.state = 'hunt'; e.targetPlanet = null;
+        e.vx = Math.cos(a) * 0.9; e.vy = Math.sin(a) * 0.9;
+      }
+      continue;
     }
 
-    // Priority 2: escort own expansion / raid player planets
-    if (!e.targetFreighter) {
-      if (!e.targetPlanet ||
-          (e.targetPlanet.owner && e.targetPlanet.owner !== 'player' && e.targetPlanet.owner !== e.faction)) {
-        const flagged = planets.filter(p => p.flaggedBy === e.faction && !p.owner);
-        const yours = planets.filter(p => p.owner === 'player');
-        if (flagged.length > 0 && Math.random() < 0.5) {
-          e.targetPlanet = flagged[0];
-        } else if (yours.length > 0 && Math.random() < fac.aggression) {
-          e.targetPlanet = yours[Math.floor(Math.random() * yours.length)];
+    applyGravityTo(e);
+
+    /* --- APPROACH: decelerating in to land and plant a flag --- */
+    if (e.state === 'approach') {
+      const p = e.targetPlanet;
+      if (!p || p.owner || (p.flaggedBy && p.flaggedBy !== e.faction)) {
+        e.state = 'hunt'; e.targetPlanet = null;
+      } else {
+        const dx = p.x - e.x, dy = p.y - e.y, dd = Math.sqrt(dx * dx + dy * dy);
+        e.angle = Math.atan2(dy, dx);
+        const spd = Math.sqrt(e.vx * e.vx + e.vy * e.vy);
+        if (dd > p.r + 90) {
+          // Cruise in
+          e.vx += Math.cos(e.angle) * CONFIG.fighterUnit.accel * fac.speedMult;
+          e.vy += Math.sin(e.angle) * CONFIG.fighterUnit.accel * fac.speedMult;
         } else {
-          e.targetPlanet = null;
+          // Brake for touchdown
+          e.vx *= 0.92; e.vy *= 0.92;
+          e.vx += Math.cos(e.angle) * 0.012;
+          e.vy += Math.sin(e.angle) * 0.012;
+        }
+        if (dd < p.r + 12 && spd < 0.8) {
+          e.state = 'landed';
+          e.landTimer = 160;   // time to plant the flag — shoot them before it's up!
+          if (p.revealed) flashMsg(fac.label + ' scout landing on ' + p.name + '!', 2200);
+          continue;            // pinned starting next frame
         }
       }
     }
 
-    let tx, ty;
-    const distToShip = dist(e, ship);
-    if (e.targetFreighter) {
-      tx = e.targetFreighter.x; ty = e.targetFreighter.y;
-    } else if ((!e.targetPlanet || (Math.random() < fac.aggression * 0.02 && distToShip < 500)) && !ship.dead) {
-      tx = ship.x; ty = ship.y;
-    } else if (e.targetPlanet) {
-      tx = e.targetPlanet.x; ty = e.targetPlanet.y;
-    } else {
-      tx = ship.x; ty = ship.y;
-    }
+    /* --- HUNT: pick objectives, dogfight, raid --- */
+    if (e.state === 'hunt') {
 
-    const dx = tx - e.x, dy = ty - e.y, dd = Math.sqrt(dx * dx + dy * dy);
-    e.angle = Math.atan2(dy, dx) + (Math.random() - 0.5) * 0.25;
-    if (dd > 110) {
-      e.vx += Math.cos(e.angle) * CONFIG.fighterUnit.accel * fac.speedMult;
-      e.vy += Math.sin(e.angle) * CONFIG.fighterUnit.accel * fac.speedMult;
-    }
+      // Priority 1: intercept player freighters nearby
+      if (!e.targetFreighter || e.targetFreighter.hull <= 0) {
+        e.targetFreighter = null;
+        if (Math.random() < fac.aggression * 0.03) {
+          for (const f of freighters) {
+            if (f.owner === 'player' && dist(e, f) < 420) { e.targetFreighter = f; break; }
+          }
+        }
+      }
 
-    // Shoot at the intercepted freighter
-    if (e.targetFreighter && dd < 260 && e.shootTimer <= 0) {
-      fireAimedShot(e.x, e.y, e.targetFreighter, true, e.r + 5);
-      e.shootTimer = 90 + Math.random() * 100;
-    }
+      // Priority 2: claim missions — land on a neutral planet to flag it,
+      // just like the player does (only if the faction has no pending claim)
+      if (!e.targetFreighter && Math.random() < 0.015) {
+        const pending = planets.some(q => q.flaggedBy === e.faction && !q.owner);
+        if (!pending) {
+          const neutral = planets.filter(q => !q.owner && !q.flaggedBy);
+          if (neutral.length > 0) {
+            e.targetPlanet = neutral[Math.floor(Math.random() * neutral.length)];
+            e.state = 'approach';
+          }
+        }
+      }
 
-    // Raid player structures
-    if (e.targetPlanet && e.targetPlanet.owner === 'player' && dd < e.targetPlanet.r + 240) {
-      if (e.shootTimer <= 0) {
-        const types = Object.keys(e.targetPlanet.structures);
-        if (types.length > 0) {
-          const t = types[Math.floor(Math.random() * types.length)];
-          fireAimedShot(e.x, e.y, structPos(e.targetPlanet, t), true, e.r + 5);
-          e.shootTimer = 100 + Math.random() * 120;
+      // Priority 3: raid player planets
+      if (e.state === 'hunt' && !e.targetFreighter) {
+        if (!e.targetPlanet || e.targetPlanet.owner !== 'player') {
+          const yours = planets.filter(q => q.owner === 'player');
+          e.targetPlanet = (yours.length > 0 && Math.random() < fac.aggression)
+            ? yours[Math.floor(Math.random() * yours.length)]
+            : null;
         }
       }
     }
 
+    if (e.state === 'hunt') {
+      let tx, ty, dogfight = false;
+      const distToShip = dist(e, ship);
+      if (e.targetFreighter) {
+        tx = e.targetFreighter.x; ty = e.targetFreighter.y; dogfight = true;
+      } else if ((!e.targetPlanet || (Math.random() < fac.aggression * 0.02 && distToShip < 500)) && !ship.dead) {
+        tx = ship.x; ty = ship.y; dogfight = true;
+      } else if (e.targetPlanet) {
+        tx = e.targetPlanet.x; ty = e.targetPlanet.y;
+      } else {
+        tx = ship.x; ty = ship.y; dogfight = true;
+      }
+
+      const dx = tx - e.x, dy = ty - e.y, dd = Math.sqrt(dx * dx + dy * dy);
+      const toTarget = Math.atan2(dy, dx);
+      e.angle = toTarget + (Math.random() - 0.5) * 0.2;
+
+      if (dogfight && dd < 150) {
+        // Air combat: don't ram — break into a strafing arc around the target
+        if (!e.strafeDir) e.strafeDir = Math.random() < 0.5 ? 1 : -1;
+        const strafe = toTarget + e.strafeDir * 1.35;
+        e.vx += Math.cos(strafe) * CONFIG.fighterUnit.accel * fac.speedMult;
+        e.vy += Math.sin(strafe) * CONFIG.fighterUnit.accel * fac.speedMult;
+      } else if (dd > 110) {
+        e.vx += Math.cos(e.angle) * CONFIG.fighterUnit.accel * fac.speedMult;
+        e.vy += Math.sin(e.angle) * CONFIG.fighterUnit.accel * fac.speedMult;
+      }
+
+      // Shoot at the intercepted freighter
+      if (e.targetFreighter && dd < 260 && e.shootTimer <= 0) {
+        fireAimedShot(e.x, e.y, e.targetFreighter, true, e.r + 5);
+        e.shootTimer = 90 + Math.random() * 100;
+      }
+
+      // Raid player structures
+      if (e.targetPlanet && e.targetPlanet.owner === 'player' && dd < e.targetPlanet.r + 240) {
+        if (e.shootTimer <= 0) {
+          const types = Object.keys(e.targetPlanet.structures);
+          if (types.length > 0) {
+            const t = types[Math.floor(Math.random() * types.length)];
+            fireAimedShot(e.x, e.y, structPos(e.targetPlanet, t), true, e.r + 5);
+            e.shootTimer = 100 + Math.random() * 120;
+          }
+        }
+      }
+
+      // Fire at the player's fighter
+      if (e.shootTimer <= 0 && distToShip < fac.shootRange && !ship.dead) {
+        fireShot(e, true);
+        e.shootTimer = 110 + Math.random() * 130;
+      }
+    }
+
+    /* --- Planet avoidance: steer around discs they aren't landing on --- */
+    for (const p of planets) {
+      if (e.state === 'approach' && p === e.targetPlanet) continue;
+      const d = dist(e, p);
+      const margin = p.r + 30;
+      if (d < margin && d > 0.1) {
+        const push = (margin - d) / margin;          // stronger the deeper they are
+        const nx = (e.x - p.x) / d, ny = (e.y - p.y) / d;
+        e.vx += nx * push * 0.12;
+        e.vy += ny * push * 0.12;
+      }
+    }
+
+    /* --- Movement, speed cap, and REAL crashes (no more teleporting) --- */
     const maxSpd = CONFIG.fighterUnit.maxSpeed * fac.speedMult;
-    const spd = Math.sqrt(e.vx * e.vx + e.vy * e.vy);
-    if (spd > maxSpd) { e.vx = e.vx / spd * maxSpd; e.vy = e.vy / spd * maxSpd; }
+    const spd2 = Math.sqrt(e.vx * e.vx + e.vy * e.vy);
+    if (spd2 > maxSpd) { e.vx = e.vx / spd2 * maxSpd; e.vy = e.vy / spd2 * maxSpd; }
     e.x += e.vx; e.y += e.vy;
     e.x = Math.max(0, Math.min(WORLD_W, e.x));
     e.y = Math.max(0, Math.min(WORLD_H, e.y));
 
     for (const p of planets) {
-      if (dist(e, p) < p.r * 0.35) {   // fighters fly over the disc, avoid only the core
-        const na = Math.random() * Math.PI * 2;
-        e.x = p.x + Math.cos(na) * (p.r + 120);
-        e.y = p.y + Math.sin(na) * (p.r + 120);
-        e.vx = 0; e.vy = 0;
+      if (dist(e, p) < p.r * 0.3) {
+        // Flew into the planet core: destroyed, same rules as everyone else
+        e.hull = -999;
+        spawnPart(e.x, e.y, fac.color, 25);
+        if (p.revealed) flashMsg(fac.label + ' fighter crashed on ' + p.name, 1800);
+        break;
       }
     }
-
-    if (e.shootTimer > 0) e.shootTimer--;
-    if (e.shootTimer <= 0 && distToShip < fac.shootRange && !ship.dead) {
-      fireShot(e, true);
-      e.shootTimer = 110 + Math.random() * 130;
-    }
-
-    e.flicker += 1;
   }
+  enemies = enemies.filter(e => e.hull > -900);
 }
 
 function updatePlatforms() {
@@ -1156,12 +1439,16 @@ function updateBullets() {
 
     if (b.isEnemy) {
       if (!ship.dead && dist(b, ship) < 11) {
-        ship.hull -= 10; b.life = 0;
-        spawnPart(ship.x, ship.y, '#e87a30', 10);
-        if (ship.hull <= 0) {
-          ship.dead = true;
-          gameState = 'dead';
-          flashMsg('Hull breach — click Restart to try again', 9999);
+        b.life = 0;
+        Snd.hit();
+        // Shields absorb damage before the hull, like the original
+        if (ship.shields > 0) {
+          ship.shields = Math.max(0, ship.shields - 12);
+          spawnPart(ship.x, ship.y, '#7ecfff', 8);
+        } else {
+          ship.hull -= 10;
+          spawnPart(ship.x, ship.y, '#e87a30', 10);
+          if (ship.hull <= 0) shipDestroyed();
         }
         continue;
       }
@@ -1229,6 +1516,7 @@ function updateResearch() {
       return;
     }
     researchReady = options[Math.floor(Math.random() * options.length)];
+    Snd.develop();
     flashMsg('LABS HAVE A NEW DEVELOPMENT — land at a base to install!', 4000);
   }
 }
@@ -1273,6 +1561,8 @@ function update() {
   if (gameState !== 'playing' || shopOpen) return;
   handleInput();
   updateShip();
+  updateRespawn();
+  updateMissiles();
   updateMaterials();
   updateProduction();
   updateAiFlags();
@@ -1540,6 +1830,21 @@ function drawVelocityIndicator() {
   ctx.font = '9px monospace';
   ctx.textAlign = 'left';
   ctx.fillText('VEL', bx, by - 4);
+
+  // Shields bar (light blue) above the velocity indicator
+  const sy2 = by - 22;
+  ctx.fillStyle = 'rgba(10,16,26,0.85)';
+  ctx.fillRect(bx, sy2, bw, 6);
+  ctx.fillStyle = '#7ecfff';
+  ctx.fillRect(bx + 1, sy2 + 1, (bw - 2) * (ship.shields / ship.maxShields), 4);
+  ctx.fillStyle = '#556a80';
+  ctx.fillText('SHLD', bx, sy2 - 3);
+
+  // Missile pips (white vertical lines, like the original)
+  for (let i = 0; i < ship.missiles; i++) {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(bx + bw + 10 + i * 6, by - 1, 2, bh + 2);
+  }
 }
 
 function drawMinimap() {
@@ -1626,6 +1931,20 @@ function draw() {
     ctx.fillStyle = p.color;
     ctx.fill();
     ctx.restore();
+  }
+
+  for (const m of missiles) {
+    if (!onScreen(m.x, m.y, 10)) continue;
+    const s = worldToScreen(m.x, m.y);
+    const a = Math.atan2(m.vy, m.vx);
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(a);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(5, 0); ctx.lineTo(-5, 0); ctx.stroke();
+    ctx.restore();
+    spawnPart(m.x - Math.cos(a) * 6, m.y - Math.sin(a) * 6, '#e8c060', 1);
   }
 
   if (!ship.dead) drawShip(ship.x, ship.y, ship.angle, ship.thrust);
