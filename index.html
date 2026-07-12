@@ -13,28 +13,76 @@
       <p>Explore the unknown. Build your empire. Fight for every dirtball.</p>
     </header>
 
-    <div id="gw-wrap">
-      <canvas id="gw-canvas" tabindex="0"></canvas>
-      <div id="gw-hud">
-        <div>HULL <span id="h-hull">100</span>%</div>
-        <div>SCORE <span id="h-score">0</span></div>
-        <div>PLANETS <span id="h-planets">0/7</span></div>
-      </div>
-      <div id="gw-status">
-        <div id="h-credits">CREDITS: 0</div>
-        <div id="h-enemies">HOSTILES: 0</div>
-        <div id="h-state">FLYING</div>
-      </div>
-      <div id="gw-msg"></div>
-      <div id="gw-focus-hint"><p>Click here to play</p></div>
+    <div id="gw-frame">
+      <!-- ============ SIDEBAR ============ -->
+      <aside id="gw-side">
+        <canvas id="radar" width="176" height="116"></canvas>
 
-      <!-- Upgrade shop overlay -->
-      <div id="gw-shop" class="hidden">
-        <div id="gw-shop-panel">
-          <h2>UPGRADE SHOP</h2>
-          <p id="shop-credits">CREDITS: 0</p>
-          <div id="shop-items"></div>
-          <button id="shop-close">CLOSE [U]</button>
+        <div id="opp-row" title="Opponent status - black means eliminated">
+          <div class="opp" id="opp-player"></div>
+          <div class="opp" id="opp-ashkari"></div>
+          <div class="opp" id="opp-pale"></div>
+          <div class="opp" id="opp-vorath"></div>
+        </div>
+
+        <div id="side-stats">
+          <div>SECTOR <span id="s-sector">1</span> &nbsp; SCORE <span id="s-score">0</span></div>
+          <div>CR <span id="s-credits">0</span></div>
+          <div>RAW <span id="s-raw">0</span> &nbsp; FIN <span id="s-fin">0</span></div>
+          <div>PLANETS <span id="s-planets">0/7</span> &nbsp; HOSTILES <span id="s-hostiles">0</span></div>
+          <div id="s-state">FLYING</div>
+        </div>
+
+        <div class="ind-label">SHIELDS</div>
+        <div class="ind-bar shield-bar"><div id="bar-shield"></div></div>
+
+        <div class="ind-label">DAMAGE</div>
+        <div class="ind-bar dmg-bar"><div id="bar-dmg"></div></div>
+
+        <div class="ind-label">VELOCITY <span id="missile-pips"></span></div>
+        <div class="ind-bar vel-bar" id="vel-wrap"><div id="bar-vel"></div></div>
+
+        <canvas id="dials" width="176" height="46"></canvas>
+
+        <div id="ship-list"></div>
+      </aside>
+
+      <!-- ============ MAIN VIEW ============ -->
+      <div id="gw-wrap">
+        <canvas id="gw-canvas" tabindex="0"></canvas>
+        <div id="gw-msg"></div>
+        <div id="gw-focus-hint">
+          <div id="gw-opponents">
+            <h2>OPPONENTS</h2>
+            <div class="opp-set"><span style="color:#e85850">Ashkari Leader</span>
+              <select id="pers-ashkari">
+                <option value="aggressive" selected>Aggressive</option>
+                <option value="maniacal">Maniacal</option>
+                <option value="shrewd">Shrewd</option>
+              </select></div>
+            <div class="opp-set"><span style="color:#2ab8d6">Pale Leader</span>
+              <select id="pers-pale">
+                <option value="aggressive">Aggressive</option>
+                <option value="maniacal">Maniacal</option>
+                <option value="shrewd" selected>Shrewd</option>
+              </select></div>
+            <div class="opp-set"><span style="color:#9f6ad6">Vorath Leader</span>
+              <select id="pers-vorath">
+                <option value="aggressive">Aggressive</option>
+                <option value="maniacal" selected>Maniacal</option>
+                <option value="shrewd">Shrewd</option>
+              </select></div>
+            <button id="gw-begin">BEGIN CAMPAIGN</button>
+          </div>
+        </div>
+
+        <div id="gw-shop" class="hidden">
+          <div id="gw-shop-panel">
+            <h2>UPGRADE SHOP</h2>
+            <p id="shop-credits">CREDITS: 0</p>
+            <div id="shop-items"></div>
+            <button id="shop-close">CLOSE [U]</button>
+          </div>
         </div>
       </div>
     </div>
@@ -43,10 +91,11 @@
       <span class="key">W/&uarr;</span> thrust
       <span class="key">A/D &larr;/&rarr;</span> rotate
       <span class="key">SPACE</span> shoot
-      <span class="key">LAND</span> slow + nose away
       <span class="key">F</span> missile
+      <span class="key">LAND</span> slow + nose out
       <span class="key">U</span> shop
       <span class="key">M</span> sound
+      <span class="key">PgUp/PgDn</span> zoom
       <button id="gw-restart">&#8635; Restart</button>
     </div>
   </div>

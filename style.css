@@ -143,3 +143,150 @@ body {
   padding: 7px; cursor: pointer;
 }
 #shop-close:hover { background: #1a2535; }
+
+/* ---------- Sidebar (original-style cockpit) ---------- */
+#gw-frame { display: flex; gap: 8px; align-items: stretch; }
+
+#gw-side {
+  width: 192px;
+  flex-shrink: 0;
+  background: #0a0e16;
+  border: 0.5px solid #1a2030;
+  border-radius: 10px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 10px;
+  color: #8ab4d4;
+}
+
+#gw-frame #gw-wrap { flex: 1; min-width: 0; border-radius: 12px; }
+
+#radar {
+  width: 100%;
+  background: #05070c;
+  border: 0.5px solid #1a3050;
+  border-radius: 4px;
+}
+
+#opp-row { display: flex; gap: 4px; }
+.opp {
+  flex: 1; height: 12px;
+  border-radius: 2px;
+  border: 0.5px solid #000;
+}
+#opp-player  { background: #2adf6e; }
+#opp-ashkari { background: #e85850; }
+#opp-pale    { background: #2ab8d6; }
+#opp-vorath  { background: #9f6ad6; }
+.opp.dead { background: #000 !important; }
+.opp.flash { animation: oppflash 0.7s infinite alternate; }
+@keyframes oppflash { from { filter: brightness(1); } to { filter: brightness(2.2); } }
+
+#side-stats { line-height: 1.7; }
+#side-stats span { color: #cfe4f4; }
+#s-state { color: #7ecfff; }
+
+.ind-label { font-size: 9px; color: #556a80; margin-top: 2px; }
+#missile-pips { color: #fff; letter-spacing: 2px; }
+
+.ind-bar {
+  height: 10px;
+  border: 0.5px solid #2a3f5a;
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+.ind-bar > div { height: 100%; }
+
+.shield-bar { background: #0a1a2e; }
+#bar-shield { background: #7ecfff; }
+
+.dmg-bar { background: #1a5e35; }   /* green = healthy */
+#bar-dmg { background: #c23a2a; }   /* red fills as damage accumulates */
+
+.vel-bar { background: #0a1018; transition: background 0.2s; }
+.vel-bar.landable { background: #1a3f8f; }  /* blue = slow enough to land */
+#bar-vel { background: #7ef0ff; }
+
+#dials {
+  width: 100%;
+  background: #05070c;
+  border: 0.5px solid #1a3050;
+  border-radius: 4px;
+}
+
+#ship-list {
+  flex: 1;
+  overflow-y: auto;
+  border-top: 0.5px solid #1a2030;
+  padding-top: 4px;
+  min-height: 60px;
+}
+.sl-planet {
+  color: #cfe4f4;
+  padding: 4px 2px 2px;
+  cursor: pointer;
+  border-bottom: 0.5px solid #131a28;
+}
+.sl-planet:hover { color: #7ecfff; }
+.sl-planet.sel { color: #e85850; }
+.sl-unit {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 2px 2px 8px;
+  cursor: default;
+}
+.sl-unit.clickable { cursor: pointer; }
+.sl-unit.clickable:hover .sl-name { color: #7ecfff; }
+.sl-unit.sel .sl-name { color: #e85850; }
+.sl-name { width: 64px; color: #8ab4d4; white-space: nowrap; overflow: hidden; }
+.sl-bar {
+  flex: 1; height: 5px;
+  background: #10141e;
+  border-radius: 1px;
+  overflow: hidden;
+}
+.sl-bar > div { height: 100%; }
+.sl-bar.hp > div { background: #3fae52; }
+.sl-bar.raw > div { background: #3fae52; }
+.sl-bar.fin > div { background: #3f6fd0; }
+.sl-bar.cargo > div { background: #d66ad0; }
+
+
+/* ---------- Opponents dialog ---------- */
+#gw-opponents {
+  background: #0d1117;
+  border: 0.5px solid #2a3a55;
+  border-radius: 10px;
+  padding: 18px 22px;
+  width: min(340px, 90%);
+  font-family: monospace;
+}
+#gw-opponents h2 {
+  font-size: 14px; letter-spacing: 2px;
+  color: #7ecfff; font-weight: 500;
+  margin-bottom: 12px;
+}
+.opp-set {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; font-size: 12px;
+  padding: 6px 0;
+}
+.opp-set select {
+  font-family: monospace; font-size: 12px;
+  background: #10141e; color: #cfe4f4;
+  border: 0.5px solid #334455; border-radius: 5px;
+  padding: 4px 8px;
+}
+#gw-begin {
+  margin-top: 14px; width: 100%;
+  font-family: monospace; font-size: 12px;
+  color: #07090f; background: #7ecfff;
+  border: none; border-radius: 6px;
+  padding: 8px; cursor: pointer;
+  letter-spacing: 1px;
+}
+#gw-begin:hover { filter: brightness(1.15); }

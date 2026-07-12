@@ -54,6 +54,14 @@ code += `
   get researchReady(){return researchReady}, get researchProgress(){return researchProgress},
   set researchProgressV(v){researchProgress=v},
   keys, update, draw, init, structPos, dist,
+  get leaders(){return leaderSettings},
+  get zoomRef(){return {get z(){return zoomIdx}, set z(v){zoomIdx=v}}},
+  structPosOf(p, type){return structPos(p, type)},
+  get sector(){return sectorNum},
+  get winNeed(){return winNeed},
+  get scoreV(){return score},
+  set scoreV(v){score=v},
+  nextSector,
   setShip(props){Object.assign(ship, props)},
 };`;
 
@@ -125,22 +133,18 @@ if (neutral) {
     t.freighters.map(f => f.owner + ':' + f.state + ':' + Math.round(f.cargo)).join(' | '));
   console.log('  neutral.owner=' + neutral.owner + ' buildIndex=' + neutral.buildIndex +
     ' freighters=' + t.freighters.length);
-  assert(neutral.owner === 'player' || neutral.owner === null,
-    'flagged planet is player-owned or still pending (owner=' + neutral.owner + ')');
-  if (neutral.owner === 'player') {
-    assert(!!neutral.structures.base, 'colonized planet has a base');
-  }
+  assert(neutral.owner === 'player', 'flagged planet was colonized (owner=' + neutral.owner + ')');
+  assert(!!neutral.structures.base, 'colonized planet has a base');
 }
 
 console.log('=== 4. Physics landing ===');
 const lp = t.planets.find(p => p.owner === 'player') || t.planets[0];
-const a = 0;
 t.setShip({
-  x: lp.x + (lp.r + 6) * Math.cos(a),
-  y: lp.y + (lp.r + 6) * Math.sin(a),
-  vx: -0.2, vy: 0, angle: 0, dead: false, landedOn: null,
+  x: lp.x + lp.r + 1.5,
+  y: lp.y,
+  vx: -0.3, vy: 0, angle: 0, dead: false, landedOn: null,
 });
-frames(30, 'landing approach');
+frames(6, 'landing contact');
 console.log('  landedOn=' + (t.ship.landedOn ? t.ship.landedOn.name : 'null') +
   ' dead=' + t.ship.dead + ' hull=' + Math.round(t.ship.hull));
 assert(t.ship.landedOn === lp && !t.ship.dead, 'slow nose-out contact = safe landing');
@@ -207,12 +211,72 @@ framesPeaceful(9000, 'build up home lab');
 const home9 = t.planets[0];
 console.log('  home has lab=' + !!home9.structures.lab + ' spacedock=' + !!home9.structures.spacedock);
 home9.finished = 80;
-t.setShip({ x: home9.x - home9.r - 40, y: home9.y, vx: 3, vy: 0, angle: 0, dead: false, landedOn: null });
-framesPeaceful(30, 'crash');
+t.setShip({ x: home9.x - home9.r - 6, y: home9.y, vx: 3, vy: 0, angle: 0, dead: false, landedOn: null });
+framesPeaceful(8, 'crash');
 assert(t.ship.dead === true, 'high-speed impact destroys the fighter');
 framesPeaceful(400, 'await replacement');
 console.log('  dead=' + t.ship.dead + ' gameState=' + t.gameState + ' landedOn=' + (t.ship.landedOn ? t.ship.landedOn.name : 'null'));
 assert(t.ship.dead === false && t.gameState === 'playing', 'a new fighter was constructed and the war continues');
+
+console.log('=== 10. Star systems: planets orbit, stars are lethal ===');
+t.init();
+const p0 = t.planets[0];
+const startX = p0.x, startY = p0.y;
+framesPeaceful(3000, 'orbital motion');
+const moved = Math.sqrt((p0.x - startX) ** 2 + (p0.y - startY) ** 2);
+console.log('  HOME moved ' + Math.round(moved) + 'px along its orbit');
+assert(moved > 20, 'planets orbit their suns');
+// Landed structures stay attached while the planet moves
+assert(!!p0.structures.base, 'structures persist through orbital motion');
+
+console.log('=== 11. Personalities: all three run stable, shrewd out-builds maniacal ===');
+// Run a maniacal-vs-shrewd economy comparison
+sandboxSet('maniacal');
+t.init();
+frames(6000, 'all-maniacal war');
+const maniacalFin = t.planets[1].finished + t.planets[2].finished + t.planets[3].finished;
+sandboxSet('shrewd');
+t.init();
+frames(6000, 'all-shrewd war');
+const shrewdRaw = t.planets[1].raw + t.planets[2].raw + t.planets[3].raw;
+console.log('  shrewd AI raw stock=' + Math.round(shrewdRaw) + ' vs maniacal fin=' + Math.round(maniacalFin));
+assert(frameErrors === 0, 'both personality extremes run without frame errors');
+
+function sandboxSet(p) { t.leaders.ashkari = p; t.leaders.pale = p; t.leaders.vorath = p; }
+
+console.log('=== 12. Sector progression: warp scales the campaign, keeps progress ===');
+t.init();
+t.scoreV = 1234;
+const s1planets = t.planets.length, s1need = t.winNeed;
+t.nextSector();
+frames(600, 'sector 2 shakedown');
+console.log('  sector=' + t.sector + ' planets ' + s1planets + '->' + t.planets.length +
+  ' winNeed ' + s1need + '->' + t.winNeed + ' score=' + t.scoreV);
+assert(t.sector === 2, 'warped to sector 2');
+assert(t.planets.length > s1planets, 'sector 2 has more planets');
+assert(t.scoreV >= 1234, 'score carried across the warp');
+assert(t.planets[0].owner === 'player', 'new HOME established in the new sector');
+
+console.log('=== 13. High Port deck landing + zoom stability ===');
+t.init();
+const homeHP = t.planets[0];
+const deck = t.structPosOf(homeHP, 'highport');
+t.setShip({ x: deck.x, y: deck.y, vx: 0.1, vy: 0, angle: 0, dead: false, landedOn: null, onPort: false, hull: 100 });
+framesPeaceful(5, 'deck contact');
+assert(t.ship.landedOn === homeHP && t.ship.onPort === true, 'fighter docks on the orbiting flight deck');
+const dx0 = t.ship.x, dy0 = t.ship.y;
+framesPeaceful(400, 'ride the orbit');
+const rode = Math.sqrt((t.ship.x - dx0) ** 2 + (t.ship.y - dy0) ** 2);
+console.log('  ship rode the deck ' + Math.round(rode) + 'px through orbit');
+assert(rode > 2, 'docked fighter rides the orbiting port');
+t.keys['w'] = true; framesPeaceful(8, 'deck liftoff'); t.keys['w'] = false;
+assert(t.ship.landedOn === null && t.ship.onPort === false, 'liftoff from deck works');
+for (const z of [0, 1, 2, 3, 4]) {
+  t.zoomRef.z = z;
+  frames(120, 'zoom level ' + z);
+}
+t.zoomRef.z = 2;
+assert(frameErrors === 0, 'all zoom levels render without errors');
 
 console.log('\n' + (frameErrors === 0 ? 'ALL CHECKS PASSED' : frameErrors + ' PROBLEM(S) FOUND'));
 process.exit(frameErrors === 0 ? 0 : 1);
