@@ -163,10 +163,10 @@ frames(400, 'research completes');
 console.log('  researchReady=' + t.researchReady);
 // land at home base
 t.setShip({
-  x: home.x + (home.r + 6), y: home.y, vx: -0.2, vy: 0, angle: 0,
-  dead: false, landedOn: null,
+  x: home.x + home.r + 1.5, y: home.y, vx: -0.3, vy: 0, angle: 0,
+  dead: false, landedOn: null, onPort: false,
 });
-frames(60, 'land to install');
+frames(10, 'land to install');
 assert(t.researchReady === null, 'landing at base installs research (ready=' + t.researchReady + ')');
 
 console.log('=== 7. Long soak: 20000 frames of full war ===');

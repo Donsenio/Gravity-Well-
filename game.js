@@ -22,7 +22,7 @@
 
 /* ---------- 1. CONFIG & STRUCTURES ---------- */
 const CONFIG = {
-  world: { w: 2800, h: 1900 },
+  world: { w: 3600, h: 2400 },
   ship: {
     thrust: 0.07,
     turnSpeed: 0.04,
@@ -54,10 +54,12 @@ const CONFIG = {
   gravity: { maxPull: 0.55 },
   suns: {
     count: 4,               // manual: 4-6 stars, 1-3 planets each
-    radius: 30,
-    mass: 9000,             // much deeper gravity well than a planet
-    maxPull: 0.75,
+    radius: 58,             // properly star-sized
+    mass: 17000,            // much deeper gravity well than a planet
+    maxPull: 0.85,
     killRadius: 6,          // touching a star destroys anything
+    edgeMargin: 430,
+    minSpacing: 820,        // scattered, never clustered
   },
   planets: {
     count: 7,
@@ -81,7 +83,7 @@ const CONFIG = {
     cargoCap: 100,
     loadRate: 0.5,          // cargo transfer per frame while loading
     cost: 40,               // finished materials to build one
-    maxPerFaction: 3,
+    maxPerFaction: 4,
     attackRange: 190,
     attackCooldown: 80,
   },
@@ -93,7 +95,7 @@ const CONFIG = {
     perLabCap: 2,
     baseCap: 2,
   },
-  production: { checkFrames: 240 },   // how often labs try to build ships
+  production: { checkFrames: 190 },   // how often labs try to build ships
   aiFlagFrames: 420,                  // how often AI factions pick expansion targets
   personalities: {
     aggressive: { label: 'Aggressive', aggro: 1.6, speed: 1.0,  econ: 1.0,  claim: 0.015, fireRate: 1.0 },
@@ -483,28 +485,38 @@ function newPlanet(i, px, py) {
 function genPlanets() {
   // Sectors grow with your campaign: more suns, more planets, per the
   // manual's 4-6 stars with 1-3 planets each.
-  const SUN_SPOTS = {
-    4: [[0.20, 0.72], [0.82, 0.22], [0.80, 0.78], [0.22, 0.18]],
-    5: [[0.20, 0.72], [0.82, 0.22], [0.80, 0.78], [0.22, 0.18], [0.51, 0.47]],
-    6: [[0.18, 0.70], [0.82, 0.20], [0.80, 0.80], [0.20, 0.16], [0.50, 0.14], [0.52, 0.84]],
-  };
   const sunCount = Math.min(6, 3 + sectorNum);
   const planetCount = Math.min(10, 6 + sectorNum);
   winNeed = Math.ceil(planetCount * 0.65);
 
-  suns = SUN_SPOTS[sunCount].map(s => ({
-    x: s[0] * WORLD_W, y: s[1] * WORLD_H, r: CONFIG.suns.radius,
-  }));
+  // Suns are scattered randomly across the galaxy with real spacing —
+  // no two systems crowd each other
+  suns = [];
+  let spacing = CONFIG.suns.minSpacing;
+  for (let i = 0; i < sunCount; i++) {
+    let sx, sy, ok, tries = 0;
+    do {
+      ok = true;
+      sx = CONFIG.suns.edgeMargin + Math.random() * (WORLD_W - CONFIG.suns.edgeMargin * 2);
+      sy = CONFIG.suns.edgeMargin + Math.random() * (WORLD_H - CONFIG.suns.edgeMargin * 2);
+      for (const s of suns) {
+        if (Math.sqrt((s.x - sx) ** 2 + (s.y - sy) ** 2) < spacing) { ok = false; break; }
+      }
+      tries++;
+      if (tries % 120 === 0) spacing *= 0.9;   // relax if the galaxy is crowded
+    } while (!ok && tries < 600);
+    suns.push({ x: sx, y: sy, r: CONFIG.suns.radius });
+  }
 
   planets = [];
   for (let i = 0; i < planetCount; i++) {
     const p = newPlanet(i, 0, 0);
     if (i < 4) {
-      p.sun = suns[i];               // faction homes, one per inner sun
-      p.orbitR = 175;
+      p.sun = suns[i % suns.length]; // faction homes, one per sun
+      p.orbitR = 240;
     } else {
-      p.sun = suns[(i - 4) % sunCount];
-      p.orbitR = 300 + 60 * Math.floor((i - 4) / sunCount);
+      p.sun = suns[(i - 4) % suns.length];
+      p.orbitR = 420 + 90 * Math.floor((i - 4) / suns.length);
     }
     p.orbitA = Math.random() * Math.PI * 2;
     p.orbitSpd = (0.00035 + Math.random() * 0.00035) * (i % 2 === 0 ? 1 : -1);
@@ -1085,7 +1097,7 @@ function updateMaterials() {
     if (p.buildIndex >= FREIGHTER_BUILT && p.buildIndex < BUILD_ORDER.length) {
       const type = BUILD_ORDER[p.buildIndex];
       const builder = PLANETARY.includes(type) ? 'base' : 'highport';
-      if (p.structures[builder] && p.finished > M.buildDrain) {
+      if (p.structures[builder] && p.finished > M.buildDrain + 12) {
         p.finished -= M.buildDrain;
         p.buildProgress += baseBuildRate(p.owner);
         if (p.buildProgress >= 1) {
@@ -1163,12 +1175,13 @@ function updateFreighters() {
 
     if (f.state === 'idle') {
       if (f.cargo >= CONFIG.freighterUnit.cargoCap) {
-        // Full: find a construction target
-        let target = planets.find(p => p.flaggedBy === f.owner && !p.owner);
+        // Full: FINISH existing colonies first (they're defenseless
+        // without a High Port), then answer new flags
+        let target = planets.find(p =>
+          p.owner === f.owner && p.buildIndex < FREIGHTER_BUILT
+        );
         if (!target) {
-          target = planets.find(p =>
-            p.owner === f.owner && p.buildIndex < FREIGHTER_BUILT
-          );
+          target = planets.find(p => p.flaggedBy === f.owner && !p.owner);
         }
         if (target) { f.target = target; f.state = 'toTarget'; }
         // else: stay idle, loaded and ready
@@ -1441,19 +1454,21 @@ function updateEnemies() {
         e.state = 'hunt'; e.targetPlanet = null;
       } else {
         const dx = p.x - e.x, dy = p.y - e.y, dd = Math.sqrt(dx * dx + dy * dy);
-        e.angle = Math.atan2(dy, dx);
         const spd = Math.sqrt(e.vx * e.vx + e.vy * e.vy);
-        if (dd > p.r + 90) {
-          // Cruise in
+        if (dd > p.r + 110) {
+          // Cruise toward the planet
+          e.angle = Math.atan2(dy, dx);
           e.vx += Math.cos(e.angle) * CONFIG.fighterUnit.accel * fac.speedMult;
           e.vy += Math.sin(e.angle) * CONFIG.fighterUnit.accel * fac.speedMult;
         } else {
-          // Brake for touchdown
-          e.vx *= 0.92; e.vy *= 0.92;
-          e.vx += Math.cos(e.angle) * 0.012;
-          e.vy += Math.sin(e.angle) * 0.012;
+          // Final descent, flown like the player: rotate nose-out,
+          // retro-burn against velocity, let gravity settle them down
+          e.angle = Math.atan2(e.y - p.y, e.x - p.x);
+          e.vx *= 0.955; e.vy *= 0.955;
+          e.vx += (dx / dd) * 0.008;
+          e.vy += (dy / dd) * 0.008;
         }
-        if (dd < p.r + 12 && spd < 0.8) {
+        if (dd < p.r + 10 && spd < 0.7) {
           e.state = 'landed';
           e.landTimer = 160;   // time to plant the flag — shoot them before it's up!
           if (p.revealed) flashMsg(fac.label + ' scout landing on ' + p.name + '!', 2200);
