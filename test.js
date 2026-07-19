@@ -118,8 +118,12 @@ for (const type of Object.keys(home.structures)) {
 
 console.log('=== 2. Run 2000 idle frames ===');
 frames(2000, 'idle');
-assert(home.raw > 0 || home.finished > 0, 'HOME accumulating materials (raw=' +
-  home.raw.toFixed(1) + ' fin=' + home.finished.toFixed(1) + ')');
+// Materials may be sitting in parked freighters' cargo — count the whole economy
+const cargoMass = t.freighters.filter(f => f.owner === 'player')
+  .reduce((s, f) => s + f.cargo, 0);
+const totalMass = home.raw + home.finished + cargoMass;
+assert(totalMass > 5, 'HOME economy is producing (raw=' + home.raw.toFixed(1) +
+  ' fin=' + home.finished.toFixed(1) + ' cargo=' + cargoMass.toFixed(0) + ')');
 assert(home.buildIndex >= 3, 'HOME construction progressing (buildIndex=' + home.buildIndex + ')');
 
 console.log('=== 3. Player flags a neutral planet, freighter colonizes ===');
@@ -135,6 +139,12 @@ if (neutral) {
     ' freighters=' + t.freighters.length);
   assert(neutral.owner === 'player', 'flagged planet was colonized (owner=' + neutral.owner + ')');
   assert(!!neutral.structures.base, 'colonized planet has a base');
+  framesPeaceful(12000, 'full build-out');
+  console.log('  structures: ' + Object.keys(neutral.structures).join(','));
+  assert(!!neutral.structures.highport,
+    'third freighter built the HIGH PORT (colony is defended)');
+  assert(Object.keys(neutral.structures).length >= 5,
+    'colony continues developing past the freighter-built phase');
 }
 
 console.log('=== 4. Physics landing ===');

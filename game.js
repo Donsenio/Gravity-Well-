@@ -1,3 +1,4 @@
+const GAME_VERSION = 'v1.0 — colony pipeline fix';
 /* ============================================================
    GRAVITY WELL: RECLAIMED — Phase 4.0 "The Economy"
    Single-player. Vanilla JS + Canvas. No dependencies.
@@ -51,7 +52,10 @@ const CONFIG = {
   research: {
     ratePerLab: 0.00013,    // labs work cooperatively — more labs, faster tech
   },
-  gravity: { maxPull: 0.55 },
+  gravity: {
+    maxPull: 0.55,
+    softening: 1600,        // eps added to d^2: smooths force near surfaces
+  },
   suns: {
     count: 4,               // manual: 4-6 stars, 1-3 planets each
     radius: 58,             // properly star-sized
@@ -68,34 +72,35 @@ const CONFIG = {
     minMass: 1500,
     massExtra: 500,
     revealRange: 280,
+    coreFrac: 0.28,         // projectiles pass over the disc, stop at the core
   },
   materials: {
     cap: 100,
-    rawRate: 0.08,          // raw produced per frame by a Colony
-    rawReserve: 20,         // conversion leaves this much raw for freighters
-    convertRate: 0.02,      // raw -> finished per frame by a Base
-    buildDrain: 0.03,       // finished consumed per frame while constructing
+    rawRate: 0.15,          // raw produced per frame by a Colony
+    rawReserve: 12,         // conversion leaves this much raw for freighters
+    convertRate: 0.035,     // raw -> finished per frame by a Base (x2 w/ High Port)
+    buildDrain: 0.02,       // finished consumed per frame while constructing
     baseBuildRate: 0.0011,
   },
   freighterUnit: {
     speed: 0.85,
     hull: 60,
     cargoCap: 100,
-    loadRate: 0.5,          // cargo transfer per frame while loading
-    cost: 40,               // finished materials to build one
+    loadRate: 0.3,          // cargo transfer per frame while loading
+    cost: 22,               // finished materials to build one
     maxPerFaction: 4,
     attackRange: 190,
     attackCooldown: 80,
   },
   fighterUnit: {
-    cost: 30,               // finished materials per fighter
+    cost: 22,               // finished materials per fighter
     maxSpeed: 1.5,
     accel: 0.035,
     bulletSpeed: 3.2,
     perLabCap: 2,
     baseCap: 2,
   },
-  production: { checkFrames: 190 },   // how often labs try to build ships
+  production: { checkFrames: 150 },   // how often labs try to build ships
   aiFlagFrames: 420,                  // how often AI factions pick expansion targets
   personalities: {
     aggressive: { label: 'Aggressive', aggro: 1.6, speed: 1.0,  econ: 1.0,  claim: 0.015, fireRate: 1.0 },
@@ -169,6 +174,7 @@ const sideEls = {
   hostiles: document.getElementById('s-hostiles'),
   state: document.getElementById('s-state'),
   sector: document.getElementById('s-sector'),
+  version: document.getElementById('s-version'),
   barShield: document.getElementById('bar-shield'),
   barDmg: document.getElementById('bar-dmg'),
   barVel: document.getElementById('bar-vel'),
@@ -616,8 +622,9 @@ function init(keepProgress) {
   selected = null;
   listFrame = 0;
 
-  // Every faction begins with one freighter and two fighters
+  // Every faction begins with two freighters
   for (let i = 0; i < 4; i++) {
+    spawnFreighterUnit(FACTION_LIST[i], planets[i]);
     spawnFreighterUnit(FACTION_LIST[i], planets[i]);
   }
   const startFighters = Math.min(4, 1 + sectorNum);
@@ -675,19 +682,22 @@ function spawnFreighterUnit(owner, nearPlanet) {
 
 /* ---------- 5. UPDATE ---------- */
 function applyGravityTo(obj) {
+  const eps = CONFIG.gravity.softening;
   for (const p of planets) {
     if (!p.revealed) continue;
     const dx = p.x - obj.x, dy = p.y - obj.y;
-    const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-    const f = Math.min(p.mass / (d * d), CONFIG.gravity.maxPull);
+    const d2 = dx * dx + dy * dy;
+    const d = Math.max(Math.sqrt(d2), 1);
+    const f = Math.min(p.mass / (d2 + eps), CONFIG.gravity.maxPull);
     obj.vx += (dx / d) * f * 0.016;
     obj.vy += (dy / d) * f * 0.016;
   }
   // Stars are far deeper gravity wells — respect them or be eaten
   for (const s of suns) {
     const dx = s.x - obj.x, dy = s.y - obj.y;
-    const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-    const f = Math.min(CONFIG.suns.mass / (d * d), CONFIG.suns.maxPull);
+    const d2 = dx * dx + dy * dy;
+    const d = Math.max(Math.sqrt(d2), 1);
+    const f = Math.min(CONFIG.suns.mass / (d2 + eps), CONFIG.suns.maxPull);
     obj.vx += (dx / d) * f * 0.016;
     obj.vy += (dy / d) * f * 0.016;
   }
@@ -943,8 +953,10 @@ function updateShip() {
       ship.angle = oa;
       ship.vx = 0; ship.vy = 0;
     } else {
-      // Pinned to the surface, nose out
-      const a = ship.angle;
+      // Pinned to the surface at the stored landing bearing, nose out.
+      // The planet translates along its orbit; the fighter rides it.
+      const a = (ship.landAngle !== undefined) ? ship.landAngle : ship.angle;
+      ship.angle = a;
       ship.x = p.x + Math.cos(a) * (p.r + 8);
       ship.y = p.y + Math.sin(a) * (p.r + 8);
       ship.vx = 0; ship.vy = 0;
@@ -1033,8 +1045,9 @@ function updateShip() {
       if (speed > CONFIG.ship.crashSpeed) {
         shipDestroyed();
       } else if (speed <= CONFIG.ship.landSpeed && noseOut) {
-        // TOUCHDOWN
+        // TOUCHDOWN — store the landing bearing explicitly
         ship.landedOn = p;
+        ship.landAngle = outward;
         ship.angle = outward;
         ship.x = p.x + Math.cos(outward) * (p.r + 8);
         ship.y = p.y + Math.sin(outward) * (p.r + 8);
@@ -1097,7 +1110,7 @@ function updateMaterials() {
     if (p.buildIndex >= FREIGHTER_BUILT && p.buildIndex < BUILD_ORDER.length) {
       const type = BUILD_ORDER[p.buildIndex];
       const builder = PLANETARY.includes(type) ? 'base' : 'highport';
-      if (p.structures[builder] && p.finished > M.buildDrain + 12) {
+      if (p.structures[builder] && p.finished > M.buildDrain + 8) {
         p.finished -= M.buildDrain;
         p.buildProgress += baseBuildRate(p.owner);
         if (p.buildProgress >= 1) {
@@ -1186,11 +1199,15 @@ function updateFreighters() {
         if (target) { f.target = target; f.state = 'toTarget'; }
         // else: stay idle, loaded and ready
       } else {
-        // Not full: find a colony with raw materials to load from
+        // Not full: find a colony to load from, preferring one that no
+        // other freighter of ours is already working
         let best = null, bd = Infinity;
         for (const p of planets) {
-          if (p.owner === f.owner && p.structures.colony && p.raw > 5) {
-            const d = dist(f, p);
+          if (p.owner === f.owner && p.structures.colony) {
+            const busy = freighters.some(q =>
+              q !== f && q.owner === f.owner && q.target === p &&
+              (q.state === 'loading' || q.state === 'toColony'));
+            const d = dist(f, p) + (busy ? 100000 : 0);
             if (d < bd) { bd = d; best = p; }
           }
         }
@@ -1207,12 +1224,13 @@ function updateFreighters() {
       const p = f.target;
       if (!p || p.owner !== f.owner || !p.structures.colony) { f.state = 'idle'; f.target = null; }
       else {
-        const amt = Math.min(CONFIG.freighterUnit.loadRate, p.raw,
+        // Park at the colony and load until FULL — if the raw pool runs
+        // momentarily dry, wait for production rather than wandering off
+        const amt = Math.min(CONFIG.freighterUnit.loadRate, Math.max(0, p.raw),
                              CONFIG.freighterUnit.cargoCap - f.cargo);
         p.raw -= amt;
         f.cargo += amt;
         if (f.cargo >= CONFIG.freighterUnit.cargoCap) { f.state = 'idle'; f.target = null; }
-        else if (p.raw <= 0.5) { f.state = 'idle'; f.target = null; }  // well ran dry, re-evaluate
       }
     } else if (f.state === 'toTarget') {
       const p = f.target;
@@ -1239,12 +1257,16 @@ function updateFreighters() {
               flashMsg(CONFIG.factions[f.owner].label + ' built a base on ' + p.name, 2500);
             }
           } else {
-            addStructure(p, 'colony');
-            p.buildIndex = 2;
+            // Build whatever the chain needs next (Colony, then High Port)
+            const type = BUILD_ORDER[p.buildIndex];
+            addStructure(p, type);
+            p.buildIndex++;
             p.buildProgress = 0;
             if (f.owner === 'player') {
               score += 150;
-              flashMsg('Freighter consumed — COLONY constructed on ' + p.name, 2500);
+              flashMsg('Freighter consumed — ' + STRUCTS[type].name + ' constructed on ' + p.name, 2500);
+            } else if (p.revealed) {
+              flashMsg(CONFIG.factions[f.owner].label + ' built a ' + STRUCTS[type].name + ' on ' + p.name, 2200);
             }
           }
           spawnPart(f.x, f.y, '#b8c8d0', 25);
@@ -1297,11 +1319,17 @@ function moveToward(obj, target, spd) {
   }
   for (const s of suns) {
     const sd = dist(obj, s);
-    const margin = s.r + 70;
+    const margin = s.r + 110;
     if (sd < margin && sd > 0.1) {
       const nx = (obj.x - s.x) / sd, ny = (obj.y - s.y) / sd;
-      obj.x += nx * (margin - sd) * 0.5;
-      obj.y += ny * (margin - sd) * 0.5;
+      const push = (margin - sd);
+      // Tangential steering: slide AROUND the sun toward the target side,
+      // not just straight back — prevents pursuit-orbit traps
+      let tx2 = -ny, ty2 = nx;
+      const wantX = target.x - obj.x, wantY = target.y - obj.y;
+      if (tx2 * wantX + ty2 * wantY < 0) { tx2 = -tx2; ty2 = -ty2; }
+      obj.x += nx * push * 0.25 + tx2 * push * 0.35;
+      obj.y += ny * push * 0.25 + ty2 * push * 0.35;
     }
   }
 }
@@ -1374,7 +1402,7 @@ function updateMissiles() {
         }
       }
       if (m.life <= 0) break;
-      if (dist(m, p) < p.r * 0.28) { m.life = 0; spawnPart(m.x, m.y, '#fff', 10); break; }
+      if (dist(m, p) < p.r * CONFIG.planets.coreFrac) { m.life = 0; spawnPart(m.x, m.y, '#fff', 10); break; }
     }
     if (m.life > 0 && sunContact(m, 0)) { m.life = 0; spawnPart(m.x, m.y, '#ffd94a', 8); }
   }
@@ -1426,10 +1454,12 @@ function updateEnemies() {
       if (!p || p.owner || (p.flaggedBy && p.flaggedBy !== e.faction)) {
         // Beaten to it — lift off
         e.state = 'hunt'; e.targetPlanet = null;
+        e.landAngle = undefined;
         continue;
       }
-      // Pinned to the rim, nose out
-      const a = Math.atan2(e.y - p.y, e.x - p.x);
+      // Pinned to the rim at the stored landing bearing, nose out
+      if (e.landAngle === undefined) e.landAngle = Math.atan2(e.y - p.y, e.x - p.x);
+      const a = e.landAngle;
       e.x = p.x + Math.cos(a) * (p.r + 7);
       e.y = p.y + Math.sin(a) * (p.r + 7);
       e.vx = 0; e.vy = 0;
@@ -1440,6 +1470,7 @@ function updateEnemies() {
         if (p.revealed) flashMsg(p.name + ' flagged by ' + fac.label + ' — their freighters are coming', 2800);
         // Lift off
         e.state = 'hunt'; e.targetPlanet = null;
+        e.landAngle = undefined;
         e.vx = Math.cos(a) * 0.9; e.vy = Math.sin(a) * 0.9;
       }
       continue;
@@ -1470,6 +1501,7 @@ function updateEnemies() {
         }
         if (dd < p.r + 10 && spd < 0.7) {
           e.state = 'landed';
+          e.landAngle = Math.atan2(e.y - p.y, e.x - p.x);
           e.landTimer = 160;   // time to plant the flag — shoot them before it's up!
           if (p.revealed) flashMsg(fac.label + ' scout landing on ' + p.name + '!', 2200);
           continue;            // pinned starting next frame
@@ -1576,14 +1608,17 @@ function updateEnemies() {
       spawnPart(e.x, e.y, '#ffd94a', 30);
       continue;
     }
-    // Steer well clear of stars
+    // Steer well clear of stars: radial push + tangential slide
     for (const s of suns) {
       const d = dist(e, s);
-      const margin = s.r + 80;
+      const margin = s.r + 100;
       if (d < margin && d > 0.1) {
         const push = (margin - d) / margin;
-        e.vx += ((e.x - s.x) / d) * push * 0.3;
-        e.vy += ((e.y - s.y) / d) * push * 0.3;
+        const nx = (e.x - s.x) / d, ny = (e.y - s.y) / d;
+        let tx2 = -ny, ty2 = nx;
+        if (tx2 * e.vx + ty2 * e.vy < 0) { tx2 = -tx2; ty2 = -ty2; }
+        e.vx += nx * push * 0.2 + tx2 * push * 0.22;
+        e.vy += ny * push * 0.2 + ty2 * push * 0.22;
       }
     }
 
@@ -1619,6 +1654,7 @@ function updateEnemies() {
       if (e.state === 'approach' && p === e.targetPlanet && spd3 < 0.9) {
         // Clipped the rim during a slow final approach: touchdown
         e.state = 'landed';
+        e.landAngle = Math.atan2(e.y - p.y, e.x - p.x);
         e.landTimer = 160;
         if (p.revealed) flashMsg(fac.label + ' scout landing on ' + p.name + '!', 2200);
         break;
@@ -1744,7 +1780,7 @@ function updateBullets() {
 
       // Shots only stop at the planet's dense core, so you can
       // fire across the disc at the buildings — like the original
-      if (dist(b, p) < p.r * 0.28) { b.life = 0; break; }
+      if (dist(b, p) < p.r * CONFIG.planets.coreFrac) { b.life = 0; break; }
     }
     if (b.life > 0 && sunContact(b, 0)) b.life = 0;
   }
@@ -2368,6 +2404,9 @@ function loop() {
   draw();
   requestAnimationFrame(loop);
 }
+
+if (sideEls.version) sideEls.version.textContent = GAME_VERSION;
+try { console.log('Gravity Well: Reclaimed — ' + GAME_VERSION); } catch (e) {}
 
 init();
 loop();
