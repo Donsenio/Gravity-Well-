@@ -35,9 +35,17 @@ const documentStub = {
   addEventListener() {},
 };
 
+const lsStore = {};
+const localStorageStub = {
+  getItem(k) { return k in lsStore ? lsStore[k] : null; },
+  setItem(k, v) { lsStore[k] = String(v); },
+  removeItem(k) { delete lsStore[k]; },
+};
+
 const sandbox = {
   document: documentStub,
-  window: { addEventListener() {} },
+  window: { addEventListener() {}, localStorage: localStorageStub },
+  localStorage: localStorageStub,
   requestAnimationFrame(cb) { sandbox.__rafCb = cb; },
   setTimeout, clearTimeout,
   Math, Date, console,
@@ -62,6 +70,8 @@ code += `
   get scoreV(){return score},
   set scoreV(v){score=v},
   nextSector,
+  saveCampaign, loadCampaign, recordHiScore, getHiScores,
+  set sectorV(v){sectorNum=v},
   setShip(props){Object.assign(ship, props)},
 };`;
 
@@ -287,6 +297,24 @@ for (const z of [0, 1, 2, 3, 4]) {
 }
 t.zoomRef.z = 2;
 assert(frameErrors === 0, 'all zoom levels render without errors');
+
+console.log('=== 14. Save/load campaign persistence ===');
+t.init();
+t.scoreV = 4200;
+t.sectorV = 3;
+t.saveCampaign();
+const saved = t.loadCampaign();
+console.log('  saved sector=' + (saved && saved.sector) + ' score=' + (saved && saved.score));
+assert(saved && saved.sector === 3 && saved.score === 4200, 'campaign saves and loads');
+
+console.log('=== 15. High score recording ===');
+const before = t.getHiScores().length;
+t.recordHiScore(999999, 9);   // guaranteed top
+t.recordHiScore(1, 1);        // guaranteed low
+const hs = t.getHiScores();
+console.log('  top score=' + (hs[0] && hs[0].score) + ' entries=' + hs.length);
+assert(hs[0].score === 999999, 'highest score sorts to the top');
+assert(hs.length <= 5, 'high score list is capped at 5');
 
 console.log('\n' + (frameErrors === 0 ? 'ALL CHECKS PASSED' : frameErrors + ' PROBLEM(S) FOUND'));
 process.exit(frameErrors === 0 ? 0 : 1);

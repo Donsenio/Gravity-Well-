@@ -1,4 +1,4 @@
-const GAME_VERSION = 'v1.0 — colony pipeline fix';
+const GAME_VERSION = 'v1.1 — save system';
 /* ============================================================
    GRAVITY WELL: RECLAIMED — Phase 4.0 "The Economy"
    Single-player. Vanilla JS + Canvas. No dependencies.
@@ -242,8 +242,59 @@ let shopOpen = false;
 function nextSector() {
   sectorNum++;
   init(true);
+  saveCampaign();
   flashMsg('Warped to SECTOR ' + sectorNum + ' — deeper space, harder rivals', 3500);
 }
+
+/* ---------- Save system (localStorage) ---------- */
+const SAVE_KEY = 'gwr_campaign_v1';
+const HISCORE_KEY = 'gwr_hiscores_v1';
+
+function saveCampaign() {
+  try {
+    const data = {
+      sector: sectorNum,
+      score: score,
+      credits: credits,
+      upgrades: upgradeLevels,
+      leaders: leaderSettings,
+      stamp: Date.now(),
+    };
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+  } catch (e) {}
+}
+
+function loadCampaign() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) { return null; }
+}
+
+function clearCampaign() {
+  try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+}
+
+function getHiScores() {
+  try {
+    const raw = localStorage.getItem(HISCORE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) { return []; }
+}
+
+function recordHiScore(finalScore, sectorReached) {
+  try {
+    const list = getHiScores();
+    list.push({ score: finalScore, sector: sectorReached, date: Date.now() });
+    list.sort((a, b) => b.score - a.score);
+    const top = list.slice(0, 5);
+    localStorage.setItem(HISCORE_KEY, JSON.stringify(top));
+    return top;
+  } catch (e) { return []; }
+}
+
+let hiScoreRecorded = false;
 
 canvas.addEventListener('keydown', e => {
   Snd.ensure();
@@ -265,6 +316,50 @@ canvas.addEventListener('keydown', e => {
   if ([' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
 });
 canvas.addEventListener('keyup', e => { keys[e.key] = false; });
+function refreshMenu() {
+  const save = loadCampaign();
+  const contBtn = document.getElementById('gw-continue');
+  if (contBtn) {
+    if (save) {
+      contBtn.style.display = 'block';
+      contBtn.textContent = 'CONTINUE — Sector ' + save.sector + ' (score ' + save.score + ')';
+    } else {
+      contBtn.style.display = 'none';
+    }
+  }
+  const hsEl = document.getElementById('gw-hiscores');
+  if (hsEl) {
+    const scores = getHiScores();
+    if (scores.length === 0) {
+      hsEl.innerHTML = '<div class="hs-title">NO CAMPAIGNS YET</div>';
+    } else {
+      hsEl.innerHTML = '<div class="hs-title">BEST CAMPAIGNS</div>' +
+        scores.map((s, i) => '<div class="hs-row"><span>' + (i + 1) + '.</span>' +
+          '<span>' + s.score + '</span><span>Sector ' + s.sector + '</span></div>').join('');
+    }
+  }
+}
+
+const continueBtn = document.getElementById('gw-continue');
+if (continueBtn) {
+  continueBtn.addEventListener('click', (ev) => {
+    if (ev && ev.stopPropagation) ev.stopPropagation();
+    const save = loadCampaign();
+    if (!save) return;
+    sectorNum = save.sector;
+    score = save.score;
+    credits = save.credits;
+    upgradeLevels = save.upgrades || {};
+    leaderSettings = save.leaders || leaderSettings;
+    hiScoreRecorded = false;
+    init(true);
+    hint.style.display = 'none';
+    canvas.focus();
+    Snd.ensure();
+    flashMsg('Resuming campaign — Sector ' + sectorNum, 3000);
+  });
+}
+
 const beginBtn = document.getElementById('gw-begin');
 if (beginBtn) {
   beginBtn.addEventListener('click', (ev) => {
@@ -274,7 +369,9 @@ if (beginBtn) {
       if (sel && sel.value) leaderSettings[f] = sel.value;
     }
     sectorNum = 1;
+    hiScoreRecorded = false;
     init(false);
+    saveCampaign();
     hint.style.display = 'none';
     canvas.focus();
     Snd.ensure();
@@ -284,7 +381,8 @@ if (beginBtn) {
       CONFIG.personalities[leaderSettings.vorath].label, 3000);
   });
 }
-restartBtn.addEventListener('click', () => { hint.style.display = 'flex'; });
+restartBtn.addEventListener('click', () => { hint.style.display = 'flex'; refreshMenu(); });
+refreshMenu();
 canvas.addEventListener('focus', () => { hint.style.display = 'none'; });
 shopCloseBtn.addEventListener('click', () => { toggleShop(); canvas.focus(); });
 
@@ -432,7 +530,7 @@ function renderShop() {
 /* ---------- 4. GAME STATE ---------- */
 let ship, planets, bullets, enemies, freighters, drones, particles, stars, missiles, suns;
 let score, credits, gameState, shootCooldown, landCooldown, msgTimer;
-let productionTimer, aiFlagTimer, missileCooldown = 0;
+let productionTimer, aiFlagTimer, missileCooldown = 0, autosaveTimer = 0;
 let researchProgress, researchReady;
 let leaderSettings = { ashkari: 'aggressive', pale: 'shrewd', vorath: 'maniacal' };
 let sectorNum = 1;
@@ -897,6 +995,14 @@ function shipDestroyed() {
   }
 }
 
+function endCampaign(kind) {
+  if (!hiScoreRecorded) {
+    hiScoreRecorded = true;
+    recordHiScore(score, sectorNum);
+    clearCampaign();
+  }
+}
+
 function respawnYard() {
   // Prefer a shipyard that can pay full price; fall back to any shipyard
   return planets.find(p =>
@@ -915,7 +1021,7 @@ function updateRespawn() {
   const yard = respawnYard();
   if (!yard) {
     gameState = 'dead';
-    flashMsg('No Lab or Space Dock remains to build a fighter — Restart to try again', 9999);
+    endCampaign('DEFEAT');
     return;
   }
   yard.finished = Math.max(0, yard.finished - CONFIG.fighterUnit.cost);
@@ -1902,7 +2008,7 @@ function checkWinLose() {
 
   if (counts.player === 0) {
     gameState = 'dead';
-    flashMsg('All your bases have fallen — Restart to try again', 9999);
+    endCampaign('DEFEAT');
     return;
   }
   if (counts.player >= winNeed) {
@@ -1968,6 +2074,9 @@ function update() {
   checkWinLose();
   updateCamera();
   updateHUD();
+
+  autosaveTimer++;
+  if (autosaveTimer >= 600) { autosaveTimer = 0; saveCampaign(); }
 }
 
 /* ---------- 6. DRAW ---------- */
@@ -2394,8 +2503,40 @@ function draw() {
 
   drawLandingPrompt();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  if (gameState === 'won' || gameState === 'dead') drawEndScreen();
+
   drawRadar();
   drawDials();
+}
+
+function drawEndScreen() {
+  ctx.save();
+  ctx.fillStyle = gameState === 'won' ? 'rgba(6, 20, 10, 0.72)' : 'rgba(20, 6, 6, 0.72)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = gameState === 'won' ? '#5dffaa' : '#ff8080';
+  ctx.font = '30px monospace';
+  ctx.fillText(gameState === 'won' ? 'SECTOR ' + sectorNum + ' SECURED' : 'CAMPAIGN LOST', W / 2, H / 2 - 30);
+
+  ctx.fillStyle = '#cfe4f4';
+  ctx.font = '14px monospace';
+  ctx.fillText('Score ' + score + '  ·  Sector ' + sectorNum, W / 2, H / 2 + 2);
+
+  ctx.fillStyle = '#8ab4d4';
+  ctx.font = '13px monospace';
+  if (gameState === 'won') {
+    ctx.fillText('press ENTER to warp to the next sector', W / 2, H / 2 + 34);
+  } else {
+    ctx.fillText('press the Restart button for a new campaign', W / 2, H / 2 + 34);
+    const scores = getHiScores();
+    if (scores.length && scores[0].score === score) {
+      ctx.fillStyle = '#ffd94a';
+      ctx.fillText('★ NEW BEST CAMPAIGN ★', W / 2, H / 2 + 58);
+    }
+  }
+  ctx.restore();
 }
 
 /* ---------- 7. LOOP ---------- */

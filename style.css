@@ -290,3 +290,29 @@ body {
   letter-spacing: 1px;
 }
 #gw-begin:hover { filter: brightness(1.15); }
+
+
+/* ---------- Start menu additions ---------- */
+#gw-continue {
+  width: 100%; margin-bottom: 10px;
+  font-family: monospace; font-size: 12px;
+  color: #07090f; background: #5dffaa;
+  border: none; border-radius: 6px;
+  padding: 9px; cursor: pointer; letter-spacing: 0.5px;
+}
+#gw-continue:hover { filter: brightness(1.1); }
+.menu-sep {
+  font-size: 9px; color: #556a80;
+  letter-spacing: 1px; margin-bottom: 8px;
+  border-top: 0.5px solid #1a2535; padding-top: 8px;
+}
+#gw-hiscores { margin-top: 14px; }
+.hs-title {
+  font-size: 9px; color: #556a80; letter-spacing: 1px;
+  margin-bottom: 5px; border-top: 0.5px solid #1a2535; padding-top: 8px;
+}
+.hs-row {
+  display: flex; justify-content: space-between;
+  font-size: 11px; color: #8ab4d4; padding: 2px 0;
+}
+.hs-row span:nth-child(2) { color: #ffd94a; }
