@@ -57,7 +57,8 @@ code += `
 ;globalThis.__t = {
   get planets(){return planets}, get ship(){return ship},
   get freighters(){return freighters}, get enemies(){return enemies},
-  get drones(){return drones}, get bullets(){return bullets},
+  get drones(){return drones},
+  get freighters(){return freighters}, get bullets(){return bullets},
   get gameState(){return gameState}, get credits(){return credits},
   get researchReady(){return researchReady}, get researchProgress(){return researchProgress},
   set researchProgressV(v){researchProgress=v},
@@ -72,6 +73,9 @@ code += `
   nextSector,
   saveCampaign, loadCampaign, recordHiScore, getHiScores,
   set sectorV(v){sectorNum=v},
+  get gs(){return gameState}, set gs(v){gameState=v},
+  get drones(){return drones},
+  get freighters(){return freighters},
   setShip(props){Object.assign(ship, props)},
 };`;
 
@@ -204,8 +208,8 @@ console.log('  owners: ' + owners);
 
 console.log('=== 8. AI expansion pipeline: fighters land, flag, freighters colonize ===');
 t.init();
-let aiFlagged = false, aiColonized = false;
-for (let i = 0; i < 45000; i++) {
+let aiFlagged = false, aiColonized = false, frozeAt = -1;
+for (let i = 0; i < 70000; i++) {
   // Keep the player alive and out of the way so the AI can operate freely
   if (i % 30 === 0) {
     t.setShip({ x: 40, y: 40, vx: 0, vy: 0, hull: 100, dead: false, landedOn: null });
@@ -216,12 +220,15 @@ for (let i = 0; i < 45000; i++) {
     }
   }
   try { t.update(); } catch (e) { console.error('FRAME ERR test8:', e.message); frameErrors++; break; }
+  if (t.gs !== 'playing') { frozeAt = i; break; }   // a frozen sim must FAIL LOUDLY, not silently
   for (const p of t.planets) {
     if (p.flaggedBy && p.flaggedBy !== 'player') aiFlagged = true;
     if (p.owner && p.owner !== 'player' && t.planets.indexOf(p) > 3) aiColonized = true;
   }
   if (aiColonized) { console.log('  AI colonized a neutral planet at frame ' + i); break; }
 }
+if (frozeAt > -1) console.log('  !! simulation froze at frame ' + frozeAt + ' (gameState=' + t.gs + ')');
+assert(frozeAt === -1, 'simulation stayed alive for the whole scenario');
 assert(aiFlagged, 'an AI fighter landed and planted a flag');
 assert(aiColonized, 'an AI freighter completed a colonization');
 
@@ -250,6 +257,7 @@ assert(moved > 20, 'planets orbit their suns');
 assert(!!p0.structures.base, 'structures persist through orbital motion');
 
 console.log('=== 11. Personalities: all three run stable, shrewd out-builds maniacal ===');
+const fe11 = frameErrors;
 // Run a maniacal-vs-shrewd economy comparison
 sandboxSet('maniacal');
 t.init();
@@ -260,7 +268,7 @@ t.init();
 frames(6000, 'all-shrewd war');
 const shrewdRaw = t.planets[1].raw + t.planets[2].raw + t.planets[3].raw;
 console.log('  shrewd AI raw stock=' + Math.round(shrewdRaw) + ' vs maniacal fin=' + Math.round(maniacalFin));
-assert(frameErrors === 0, 'both personality extremes run without frame errors');
+assert(frameErrors === fe11, 'both personality extremes run without frame errors');
 
 function sandboxSet(p) { t.leaders.ashkari = p; t.leaders.pale = p; t.leaders.vorath = p; }
 
@@ -278,6 +286,7 @@ assert(t.scoreV >= 1234, 'score carried across the warp');
 assert(t.planets[0].owner === 'player', 'new HOME established in the new sector');
 
 console.log('=== 13. High Port deck landing + zoom stability ===');
+const fe13 = frameErrors;
 t.init();
 const homeHP = t.planets[0];
 const deck = t.structPosOf(homeHP, 'highport');
@@ -296,7 +305,7 @@ for (const z of [0, 1, 2, 3, 4]) {
   frames(120, 'zoom level ' + z);
 }
 t.zoomRef.z = 2;
-assert(frameErrors === 0, 'all zoom levels render without errors');
+assert(frameErrors === fe13, 'all zoom levels render without errors');
 
 console.log('=== 14. Save/load campaign persistence ===');
 t.init();
@@ -315,6 +324,84 @@ const hs = t.getHiScores();
 console.log('  top score=' + (hs[0] && hs[0].score) + ' entries=' + hs.length);
 assert(hs[0].score === 999999, 'highest score sorts to the top');
 assert(hs.length <= 5, 'high score list is capped at 5');
+
+console.log('=== 16. One ace per team + respawn ===');
+t.init();
+const perFaction = {};
+for (const e of t.enemies) perFaction[e.faction] = (perFaction[e.faction] || 0) + 1;
+console.log('  fighters per faction:', JSON.stringify(perFaction));
+assert(perFaction.ashkari === 1 && perFaction.pale === 1 && perFaction.vorath === 1,
+  'exactly one ace per rival faction at start');
+// Kill the ashkari ace; give their home a stocked shipyard; expect a respawn.
+// Park the player far away and invulnerable so no new enemies interfere.
+t.planets[1].finished = 80;
+for (let i = 0; i < 500; i++) {
+  t.enemies = t.enemies.filter(e => e.faction !== 'ashkari');  // keep ace dead
+  t.setShip({ x: 20, y: 20, hull: 100, dead: false });
+  try { t.update(); } catch (e) { frameErrors++; break; }
+}
+const ashkariAces = t.enemies.filter(e => e.faction === 'ashkari').length;
+console.log('  ashkari aces after respawn window: ' + ashkariAces);
+assert(ashkariAces === 1, 'a downed ace is reconstructed by its shipyard');
+
+console.log('=== 17. Pause halts the simulation ===');
+t.init();
+t.gs = 'paused';
+const px = t.ship.x;
+t.keys['w'] = true;
+for (let i = 0; i < 60; i++) t.update();
+t.keys['w'] = false;
+assert(t.ship.x === px, 'paused game does not advance the fighter');
+t.gs = 'playing';
+
+console.log('=== 18. Every faction Lab gets a defense drone ===');
+t.init();
+framesPeaceful(200, 'drones spawn');
+// Give an enemy home a lab if it lacks one, then confirm a drone appears
+const eh = t.planets[1];
+if (!eh.structures.lab) { eh.structures.lab = { hp: 80, maxHp: 80 }; }
+framesPeaceful(120, 'enemy drone spawns');
+const enemyDrones = t.drones.filter(d => d.owner === 'ashkari').length;
+const playerDrones = t.drones.filter(d => d.owner === 'player').length;
+console.log('  player drones=' + playerDrones + ' ashkari drones=' + enemyDrones);
+assert(playerDrones >= 1, 'player Lab has a defense drone');
+assert(enemyDrones >= 1, 'enemy Lab has a defense drone');
+
+console.log('=== 19. Guard freighters: defend when idle, mobilize when work appears ===');
+// FIXTURE RULE learned the hard way: the scenario must keep gameState === 'playing'.
+// Player owns 3 of 7 (below winNeed), enemies hold the rest, ship parked safely.
+t.init();
+const mkS = () => ({ base:{hp:130,maxHp:130}, colony:{hp:100,maxHp:100},
+                     highport:{hp:120,maxHp:120}, lab:{hp:80,maxHp:80} });
+const owners19 = ['player','player','player','ashkari','ashkari','pale','vorath'];
+for (let i = 0; i < t.planets.length; i++) {
+  const p = t.planets[i];
+  p.owner = owners19[i % owners19.length];
+  p.structures = mkS(); p.buildIndex = 7; p.flaggedBy = null; p.raw = 50; p.finished = 50;
+}
+t.setShip({ hull: 100, dead: false, landedOn: t.planets[0] });
+t.freighters.filter(f => f.owner === 'player').forEach(f => { f.cargo = 100; });
+for (let i = 0; i < 300; i++) { t.enemies.length = 0; t.update(); }
+assert(t.gs === 'playing', 'fixture keeps the game running (gs=' + t.gs + ')');
+const guards19 = t.freighters.filter(f => f.owner === 'player' && f.job === 'guard').length;
+console.log('  guards on station: ' + guards19);
+assert(guards19 >= 1, 'loaded freighters with no work stand guard at a base');
+
+// Work appears: an enemy world falls and the player flags it
+const v19 = t.planets[6];
+v19.owner = null; v19.structures = {}; v19.buildIndex = 0; v19.flaggedBy = 'player';
+t.update();
+const mobilized = t.freighters.filter(f => f.owner === 'player' && f.job === 'deliver').length;
+console.log('  mobilized one frame after the flag: ' + mobilized);
+assert(mobilized >= 1, 'guards mobilize the frame construction work appears');
+
+let rebuiltAt = -1;
+for (let i = 0; i < 12000; i++) {
+  t.enemies.length = 0; t.update();
+  if (v19.owner === 'player') { rebuiltAt = i; break; }
+}
+console.log('  flagged planet rebuilt at frame ' + rebuiltAt);
+assert(rebuiltAt > -1, 'a former guard delivered its cargo and rebuilt the planet');
 
 console.log('\n' + (frameErrors === 0 ? 'ALL CHECKS PASSED' : frameErrors + ' PROBLEM(S) FOUND'));
 process.exit(frameErrors === 0 ? 0 : 1);

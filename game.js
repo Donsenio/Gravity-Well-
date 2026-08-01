@@ -1,4 +1,4 @@
-const GAME_VERSION = 'v1.1 — save system';
+const GAME_VERSION = 'v1.4 — base guard freighters';
 /* ============================================================
    GRAVITY WELL: RECLAIMED — Phase 4.0 "The Economy"
    Single-player. Vanilla JS + Canvas. No dependencies.
@@ -47,7 +47,8 @@ const CONFIG = {
     rearmCost: 3,           // finished materials per missile when rearming
   },
   respawn: {
-    delayFrames: 300,       // labs/space docks construct you a new fighter
+    delayFrames: 300,       // player's own fighter reconstruction delay
+    aceDelayFrames: 150,    // rival ace returns faster, keeping pressure on
   },
   research: {
     ratePerLab: 0.00013,    // labs work cooperatively — more labs, faster tech
@@ -91,6 +92,9 @@ const CONFIG = {
     maxPerFaction: 4,
     attackRange: 190,
     attackCooldown: 80,
+    guardRange: 230,        // range while stationed at a base
+    guardCooldown: 95,      // slower cadence when parked — deterrent, not a wall
+    guardOffset: 34,        // how far off the base rim to hold station
   },
   fighterUnit: {
     cost: 22,               // finished materials per fighter
@@ -224,6 +228,8 @@ window.addEventListener('resize', resize);
 const WORLD_W = CONFIG.world.w;
 const WORLD_H = CONFIG.world.h;
 let cam = { x: 0, y: 0 };
+let shake = 0;
+function addShake(amt) { shake = Math.min(14, shake + amt); }
 const ZOOMS = [0.6, 0.8, 1.0, 1.3, 1.6];
 let zoomIdx = 2;
 function vzoom() { return ZOOMS[zoomIdx]; }
@@ -309,7 +315,8 @@ canvas.addEventListener('keydown', e => {
     flashMsg('Magnification ' + vzoom() + 'x', 1000);
     e.preventDefault(); return;
   }
-  if (e.key === 'm' || e.key === 'M') { Snd.muted = !Snd.muted; flashMsg(Snd.muted ? 'Sound off' : 'Sound on', 1200); return; }
+  if (e.key === 'm' || e.key === 'M') { Snd.muted = !Snd.muted; if (!Snd.muted) Music.start(); flashMsg(Snd.muted ? 'Sound off' : 'Sound on', 1200); return; }
+  if (e.key === 'p' || e.key === 'P') { if (gameState === 'playing' || gameState === 'paused') { gameState = (gameState === 'paused') ? 'playing' : 'paused'; flashMsg(gameState === 'paused' ? 'PAUSED' : 'Resumed', 1000); } return; }
   if (e.key === 'u' || e.key === 'U') { toggleShop(); e.preventDefault(); return; }
   if (e.key === 'Escape' && shopOpen) { toggleShop(); return; }
   keys[e.key] = true;
@@ -375,6 +382,7 @@ if (beginBtn) {
     hint.style.display = 'none';
     canvas.focus();
     Snd.ensure();
+    Music.start();
     flashMsg('Campaign begun — ' +
       CONFIG.personalities[leaderSettings.ashkari].label + ' / ' +
       CONFIG.personalities[leaderSettings.pale].label + ' / ' +
@@ -424,6 +432,47 @@ const Snd = {
   },
   develop() { this.tone(420, 840, 0.16, 'triangle', 0.06); setTimeout(() => this.tone(560, 1120, 0.16, 'triangle', 0.06), 170); },
   install() { this.tone(880, 1320, 0.14, 'triangle', 0.06); },
+};
+
+/* ---------- Ambient music: slow evolving drones + sparse bass ---------- */
+const Music = {
+  started: false, timer: null, step: 0,
+  // A minor pentatonic-ish set of bass roots (Hz), calm and spacey
+  roots: [55, 65.41, 73.42, 82.41, 98],
+  start() {
+    if (this.started || !Snd.ctx || Snd.muted) return;
+    this.started = true;
+    const loop = () => {
+      if (Snd.muted || !Snd.ctx) { this.started = false; return; }
+      this.beat();
+      this.timer = setTimeout(loop, 2400);
+    };
+    loop();
+  },
+  beat() {
+    try {
+      const t = Snd.ctx.currentTime;
+      const root = this.roots[this.step % this.roots.length];
+      this.step++;
+      // Bass swell
+      this.pad(root, 2.2, 0.05, 'sine');
+      // A soft fifth above, quieter
+      this.pad(root * 1.5, 2.0, 0.028, 'triangle');
+      // Occasional high shimmer
+      if (Math.random() < 0.4) this.pad(root * 4, 1.4, 0.015, 'sine');
+    } catch (e) {}
+  },
+  pad(freq, dur, vol, type) {
+    const t = Snd.ctx.currentTime;
+    const o = Snd.ctx.createOscillator();
+    const g = Snd.ctx.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + dur * 0.3);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(Snd.ctx.destination);
+    o.start(t); o.stop(t + dur);
+  },
 };
 
 /* ---------- 3. UPGRADES ---------- */
@@ -715,6 +764,7 @@ function init(keepProgress) {
   gameState = 'playing';
   shootCooldown = 0; landCooldown = 0;
   productionTimer = 0; aiFlagTimer = 0;
+  aceDown = { ashkari: 0, pale: 0, vorath: 0 };
   shopOpen = false;
   shopEl.classList.add('hidden');
   selected = null;
@@ -725,12 +775,11 @@ function init(keepProgress) {
     spawnFreighterUnit(FACTION_LIST[i], planets[i]);
     spawnFreighterUnit(FACTION_LIST[i], planets[i]);
   }
-  const startFighters = Math.min(4, 1 + sectorNum);
-  for (let n = 0; n < startFighters; n++) {
-    spawnFighter('ashkari', planets[1]);
-    spawnFighter('pale',    planets[2]);
-    spawnFighter('vorath',  planets[3]);
-  }
+  // Exactly one ace fighter per rival faction — a single persistent
+  // pilot that must scout, claim, defend, and fight on its own.
+  spawnFighter('ashkari', planets[1]);
+  spawnFighter('pale',    planets[2]);
+  spawnFighter('vorath',  planets[3]);
   spawnDrone(planets[0]);     // HOME's lab launches its defense drone
 
   flashMsg('SECTOR ' + sectorNum + ' — HOME is secure. Colonies make RAW, bases make FINISHED. Expand!', 4000);
@@ -755,6 +804,7 @@ function spawnFighter(faction, nearPlanet) {
     targetFreighter: null,
     state: 'hunt',
     landTimer: 0,
+    approachTimer: 0,
     strafeDir: Math.random() < 0.5 ? 1 : -1,
     flicker: Math.random() * 100,
   });
@@ -775,6 +825,8 @@ function spawnFreighterUnit(owner, nearPlanet) {
     r: 9,
     shootTimer: 0,
     angle: 0,
+    job: 'wait',
+    guardBase: null,
   });
 }
 
@@ -820,6 +872,33 @@ function spawnPart(x, y, col, n) {
       r: Math.random() * 2.5 + 0.5,
     });
   }
+}
+
+// A big kaboom: fireball ring + sparks + smoke + a flash + shake
+function explode(x, y, col, big) {
+  const scale = big ? 1 : 0.55;
+  for (let i = 0; i < Math.round(34 * scale); i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = Math.random() * (big ? 4.5 : 2.8) + 0.5;
+    particles.push({
+      x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      life: 1, decay: 0.015 + Math.random() * 0.02,
+      color: Math.random() < 0.5 ? '#ffd94a' : col,
+      r: Math.random() * (big ? 3.5 : 2.2) + 0.8,
+    });
+  }
+  // Slow smoke
+  for (let i = 0; i < Math.round(10 * scale); i++) {
+    const a = Math.random() * Math.PI * 2, s = Math.random() * 0.8;
+    particles.push({
+      x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      life: 1, decay: 0.006 + Math.random() * 0.006,
+      color: '#5a5a66', r: Math.random() * 4 + 2,
+    });
+  }
+  // Expanding shock ring
+  particles.push({ x, y, vx: 0, vy: 0, life: 1, decay: 0.05, ring: true, color: '#fff', r: 3 });
+  addShake(big ? 9 : 4);
 }
 
 function fireShot(obj, isEnemy) {
@@ -985,7 +1064,7 @@ function shipDestroyed() {
   ship.dead = true;
   ship.landedOn = null;
   ship.deadTimer = CONFIG.respawn.delayFrames;
-  spawnPart(ship.x, ship.y, '#e87a30', 45);
+  explode(ship.x, ship.y, '#e87a30', true);
   Snd.collide();
   const yard = respawnYard();
   if (yard) {
@@ -1012,6 +1091,27 @@ function respawnYard() {
   ) || planets.find(p =>
     p.owner === 'player' && (p.structures.lab || p.structures.spacedock)
   ) || null;
+}
+
+let aceDown = { ashkari: 0, pale: 0, vorath: 0 };
+
+function updateAceRespawn() {
+  for (const fac of ['ashkari', 'pale', 'vorath']) {
+    const alive = enemies.some(e => e.faction === fac);
+    if (alive) { aceDown[fac] = 0; continue; }
+    aceDown[fac]++;
+    if (aceDown[fac] < CONFIG.respawn.aceDelayFrames) continue;
+    const yard = planets.find(p =>
+      p.owner === fac && (p.structures.lab || p.structures.spacedock) &&
+      p.finished >= CONFIG.fighterUnit.cost
+    );
+    if (yard) {
+      yard.finished -= CONFIG.fighterUnit.cost;
+      spawnFighter(fac, yard);
+      aceDown[fac] = 0;
+      if (yard.revealed) flashMsg(CONFIG.factions[fac].label + ' has launched a new ace from ' + yard.name, 2500);
+    }
+  }
 }
 
 function updateRespawn() {
@@ -1257,18 +1357,8 @@ function updateProduction() {
       }
     }
 
-    // Then fighters (enemy factions only — you ARE your fighter)
-    if (facName !== 'player') {
-      const alive = enemies.filter(e => e.faction === facName).length;
-      const cap = CONFIG.fighterUnit.baseCap + shipyards.length * CONFIG.fighterUnit.perLabCap;
-      if (alive < cap) {
-        const src = shipyards.find(p => p.finished >= CONFIG.fighterUnit.cost);
-        if (src) {
-          src.finished -= CONFIG.fighterUnit.cost;
-          spawnFighter(facName, src);
-        }
-      }
-    }
+    // Aces are not mass-produced here — a downed ace is rebuilt on a
+    // timer by its shipyard (see updateAceRespawn), mirroring the player.
   }
 }
 
@@ -1288,115 +1378,159 @@ function updateAiFlags() {
 }
 
 /* --- Freighter unit AI: load raw cargo, deliver, be consumed building --- */
+function nearestOwnedBase(f) {
+  let best = null, bd = Infinity;
+  for (const p of planets) {
+    if (p.owner === f.owner && p.structures.base) {
+      const d = dist(f, p);
+      if (d < bd) { bd = d; best = p; }
+    }
+  }
+  return best;
+}
+
+// Construction work for a faction: finish existing colonies first
+// (they're defenseless without a High Port), then answer new flags.
+function freighterWork(owner) {
+  return planets.find(p => p.owner === owner && p.buildIndex < FREIGHTER_BUILT)
+      || planets.find(p => p.flaggedBy === owner && !p.owner)
+      || null;
+}
+
+function bestLoadingColony(f) {
+  let best = null, bd = Infinity;
+  for (const p of planets) {
+    if (p.owner === f.owner && p.structures.colony) {
+      const busy = freighters.some(q =>
+        q !== f && q.owner === f.owner && q.job === 'load' && q.target === p);
+      const d = dist(f, p) + (busy ? 100000 : 0);
+      if (d < bd) { bd = d; best = p; }
+    }
+  }
+  return best;
+}
+
+/* --- Freighter unit AI, rewritten as per-frame job routing. ---
+   Every frame each freighter re-derives its job from the world state:
+     1. cargo full and construction work exists  -> deliver
+     2. cargo not full                           -> load at a colony
+     3. cargo full, nothing to build             -> guard the nearest base
+   Because the route is recomputed from scratch, a guarding freighter
+   automatically leaves its post the frame new work appears — there are
+   no state transitions to get stuck in. */
 function updateFreighters() {
   for (const f of freighters) {
+    if (f.hull <= 0) continue;
     const spd = freighterSpd(f.owner);
+    const full = f.cargo >= CONFIG.freighterUnit.cargoCap;
 
-    if (f.state === 'idle') {
-      if (f.cargo >= CONFIG.freighterUnit.cargoCap) {
-        // Full: FINISH existing colonies first (they're defenseless
-        // without a High Port), then answer new flags
-        let target = planets.find(p =>
-          p.owner === f.owner && p.buildIndex < FREIGHTER_BUILT
-        );
-        if (!target) {
-          target = planets.find(p => p.flaggedBy === f.owner && !p.owner);
-        }
-        if (target) { f.target = target; f.state = 'toTarget'; }
-        // else: stay idle, loaded and ready
-      } else {
-        // Not full: find a colony to load from, preferring one that no
-        // other freighter of ours is already working
-        let best = null, bd = Infinity;
-        for (const p of planets) {
-          if (p.owner === f.owner && p.structures.colony) {
-            const busy = freighters.some(q =>
-              q !== f && q.owner === f.owner && q.target === p &&
-              (q.state === 'loading' || q.state === 'toColony'));
-            const d = dist(f, p) + (busy ? 100000 : 0);
-            if (d < bd) { bd = d; best = p; }
+    // A freighter that ends up inside a star is lost with its cargo
+    if (sunContact(f)) {
+      spawnPart(f.x, f.y, '#ffd94a', 25);
+      if (f.owner === 'player') flashMsg('Your freighter fell into a star!', 2500);
+      f.hull = -999;
+      continue;
+    }
+
+    /* ---- ROUTE: decide this frame's job ---- */
+    const work = full ? freighterWork(f.owner) : null;
+    if (work) {
+      f.job = 'deliver';
+      f.target = work;
+      f.guardBase = null;
+    } else if (!full) {
+      // Keep the colony we're already working if it's still valid
+      const keep = f.job === 'load' && f.target &&
+        f.target.owner === f.owner && f.target.structures.colony;
+      f.target = keep ? f.target : bestLoadingColony(f);
+      f.job = f.target ? 'load' : 'wait';
+      f.guardBase = null;
+    } else {
+      const base = (f.guardBase && f.guardBase.owner === f.owner && f.guardBase.structures.base)
+        ? f.guardBase : nearestOwnedBase(f);
+      f.guardBase = base;
+      f.target = null;
+      f.job = base ? 'guard' : 'wait';
+    }
+    f.state = f.job;   // mirrored for UI and tests
+
+    /* ---- EXECUTE the job ---- */
+    if (f.job === 'deliver') {
+      const p = f.target;
+      moveToward(f, p, spd);
+      if (dist(f, p) < p.r + 42) {
+        // CONSTRUCTION: the freighter and its cargo are consumed
+        if (!p.owner) {
+          p.owner = f.owner;
+          p.flaggedBy = null;
+          addStructure(p, 'base');
+          p.buildIndex = 1;
+          p.buildProgress = 0;
+          if (f.owner === 'player') {
+            credits += 60;
+            score += 200;
+            flashMsg('Freighter consumed — BASE constructed on ' + p.name + '!', 2500);
+          } else if (p.revealed) {
+            flashMsg(CONFIG.factions[f.owner].label + ' built a base on ' + p.name, 2500);
+          }
+        } else {
+          // Build whatever the chain needs next (Colony, then High Port)
+          const type = BUILD_ORDER[p.buildIndex];
+          addStructure(p, type);
+          p.buildIndex++;
+          p.buildProgress = 0;
+          if (f.owner === 'player') {
+            score += 150;
+            flashMsg('Freighter consumed — ' + STRUCTS[type].name + ' constructed on ' + p.name, 2500);
+          } else if (p.revealed) {
+            flashMsg(CONFIG.factions[f.owner].label + ' built a ' + STRUCTS[type].name + ' on ' + p.name, 2200);
           }
         }
-        if (best) { f.target = best; f.state = 'toColony'; }
+        spawnPart(f.x, f.y, '#b8c8d0', 25);
+        f.hull = -999;   // consumed
+        continue;
       }
-    } else if (f.state === 'toColony') {
+    } else if (f.job === 'load') {
       const p = f.target;
-      if (!p || p.owner !== f.owner || !p.structures.colony) { f.state = 'idle'; f.target = null; }
-      else {
+      if (dist(f, p) > p.r + 34) {
         moveToward(f, p, spd);
-        if (dist(f, p) < p.r + 34) f.state = 'loading';
-      }
-    } else if (f.state === 'loading') {
-      const p = f.target;
-      if (!p || p.owner !== f.owner || !p.structures.colony) { f.state = 'idle'; f.target = null; }
-      else {
-        // Park at the colony and load until FULL — if the raw pool runs
+      } else {
+        // Park at the colony and siphon until FULL — if the raw pool runs
         // momentarily dry, wait for production rather than wandering off
         const amt = Math.min(CONFIG.freighterUnit.loadRate, Math.max(0, p.raw),
                              CONFIG.freighterUnit.cargoCap - f.cargo);
         p.raw -= amt;
         f.cargo += amt;
-        if (f.cargo >= CONFIG.freighterUnit.cargoCap) { f.state = 'idle'; f.target = null; }
       }
-    } else if (f.state === 'toTarget') {
-      const p = f.target;
-      const stillValid = p && (
-        (p.flaggedBy === f.owner && !p.owner) ||
-        (p.owner === f.owner && p.buildIndex < FREIGHTER_BUILT)
-      );
-      if (!stillValid) { f.state = 'idle'; f.target = null; }
-      else {
-        moveToward(f, p, spd);
-        if (dist(f, p) < p.r + 42) {
-          // CONSTRUCTION: the freighter and its cargo are consumed
-          if (!p.owner) {
-            p.owner = f.owner;
-            p.flaggedBy = null;
-            addStructure(p, 'base');
-            p.buildIndex = 1;
-            p.buildProgress = 0;
-            if (f.owner === 'player') {
-              credits += 60;
-              score += 200;
-              flashMsg('Freighter consumed — BASE constructed on ' + p.name + '!', 2500);
-            } else if (p.revealed) {
-              flashMsg(CONFIG.factions[f.owner].label + ' built a base on ' + p.name, 2500);
-            }
-          } else {
-            // Build whatever the chain needs next (Colony, then High Port)
-            const type = BUILD_ORDER[p.buildIndex];
-            addStructure(p, type);
-            p.buildIndex++;
-            p.buildProgress = 0;
-            if (f.owner === 'player') {
-              score += 150;
-              flashMsg('Freighter consumed — ' + STRUCTS[type].name + ' constructed on ' + p.name, 2500);
-            } else if (p.revealed) {
-              flashMsg(CONFIG.factions[f.owner].label + ' built a ' + STRUCTS[type].name + ' on ' + p.name, 2200);
-            }
-          }
-          spawnPart(f.x, f.y, '#b8c8d0', 25);
-          f.hull = -999;   // consumed
-        }
-      }
+    } else if (f.job === 'guard') {
+      // Hold station just off the base rim, riding its orbit, facing out
+      const base = f.guardBase;
+      const ang = Math.atan2(f.y - base.y, f.x - base.x);
+      const gx = base.x + Math.cos(ang) * (base.r + CONFIG.freighterUnit.guardOffset);
+      const gy = base.y + Math.sin(ang) * (base.r + CONFIG.freighterUnit.guardOffset);
+      f.x += (gx - f.x) * 0.08;
+      f.y += (gy - f.y) * 0.08;
+      f.angle = ang;
     }
 
-    // Light defensive gun
+    /* ---- Defensive gun: light in transit, steadier on guard station ---- */
+    const range = f.job === 'guard' ? CONFIG.freighterUnit.guardRange : CONFIG.freighterUnit.attackRange;
+    const cooldown = f.job === 'guard' ? CONFIG.freighterUnit.guardCooldown : CONFIG.freighterUnit.attackCooldown;
     if (f.shootTimer > 0) f.shootTimer--;
     if (f.shootTimer <= 0 && f.hull > 0) {
       if (f.owner === 'player') {
         let nearest = null, nd = Infinity;
         for (const e of enemies) {
           const ed = dist(f, e);
-          if (ed < CONFIG.freighterUnit.attackRange && ed < nd) { nd = ed; nearest = e; }
+          if (ed < range && ed < nd) { nd = ed; nearest = e; }
         }
         if (nearest) {
           fireAimedShot(f.x, f.y, nearest, false, f.r + 6);
-          f.shootTimer = CONFIG.freighterUnit.attackCooldown;
+          f.shootTimer = cooldown;
         }
-      } else if (!ship.dead && dist(f, ship) < CONFIG.freighterUnit.attackRange) {
+      } else if (!ship.dead && dist(f, ship) < range) {
         fireAimedShot(f.x, f.y, ship, true, f.r + 6);
-        f.shootTimer = CONFIG.freighterUnit.attackCooldown;
+        f.shootTimer = cooldown;
       }
     }
   }
@@ -1486,7 +1620,7 @@ function updateMissiles() {
         spawnPart(e.x, e.y, '#fff', 20);
         Snd.hit();
         if (e.hull <= 0) {
-          spawnPart(e.x, e.y, CONFIG.factions[e.faction].color, 30);
+          explode(e.x, e.y, CONFIG.factions[e.faction].color, true);
           score += 150; credits += 15;
           e.hull = -999;
         }
@@ -1519,28 +1653,48 @@ function updateMissiles() {
 function spawnDrone(p) {
   drones.push({
     planet: p,
+    owner: p.owner,            // whose drone this is
     ang: Math.random() * Math.PI * 2,
     hp: CONFIG.drone.hp,
     shootTimer: 0,
+    x: p.x, y: p.y,
   });
 }
 
+// Ensure every Lab-bearing planet has exactly one defense drone, any faction.
+// Enemy planets keep a garrison even while their ace is elsewhere or downed.
+function ensureDrones() {
+  for (const p of planets) {
+    if (!p.owner || !p.structures.lab) continue;
+    if (!drones.some(d => d.planet === p && d.hp > 0)) spawnDrone(p);
+  }
+}
+
 function updateDrones() {
+  ensureDrones();
   for (const d of drones) {
-    if (d.planet.owner !== 'player' || !d.planet.structures.lab) { d.hp = -1; continue; }
+    if (!d.planet.owner || !d.planet.structures.lab) { d.hp = -1; continue; }
+    d.owner = d.planet.owner;   // track ownership if the planet changes hands
     d.ang += 0.02;
     d.x = d.planet.x + Math.cos(d.ang) * (d.planet.r + CONFIG.drone.orbit);
     d.y = d.planet.y + Math.sin(d.ang) * (d.planet.r + CONFIG.drone.orbit);
 
     if (d.shootTimer > 0) d.shootTimer--;
     if (d.shootTimer <= 0) {
-      let nearest = null, nd = Infinity;
-      for (const e of enemies) {
-        const ed = dist(d, e);
-        if (ed < CONFIG.drone.range && ed < nd) { nd = ed; nearest = e; }
-      }
-      if (nearest) {
-        fireAimedShot(d.x, d.y, nearest, false, 6);
+      if (d.owner === 'player') {
+        // Player drone shoots the nearest rival ace
+        let nearest = null, nd = Infinity;
+        for (const e of enemies) {
+          const ed = dist(d, e);
+          if (ed < CONFIG.drone.range && ed < nd) { nd = ed; nearest = e; }
+        }
+        if (nearest) {
+          fireAimedShot(d.x, d.y, nearest, false, 6);
+          d.shootTimer = CONFIG.drone.cooldown;
+        }
+      } else if (!ship.dead && !ship.landedOn && dist(d, ship) < CONFIG.drone.range) {
+        // Enemy drone defends its territory by firing on you
+        fireAimedShot(d.x, d.y, ship, true, 6);
         d.shootTimer = CONFIG.drone.cooldown;
       }
     }
@@ -1587,8 +1741,12 @@ function updateEnemies() {
     /* --- APPROACH: decelerating in to land and plant a flag --- */
     if (e.state === 'approach') {
       const p = e.targetPlanet;
+      e.approachTimer++;
       if (!p || p.owner || (p.flaggedBy && p.flaggedBy !== e.faction)) {
         e.state = 'hunt'; e.targetPlanet = null;
+      } else if (e.approachTimer > 1800) {
+        // Pursuit is going nowhere (orbit chase) — break off and re-plan
+        e.state = 'hunt'; e.targetPlanet = null; e.approachTimer = 0;
       } else {
         const dx = p.x - e.x, dy = p.y - e.y, dd = Math.sqrt(dx * dx + dy * dy);
         const spd = Math.sqrt(e.vx * e.vx + e.vy * e.vy);
@@ -1605,7 +1763,7 @@ function updateEnemies() {
           e.vx += (dx / dd) * 0.008;
           e.vy += (dy / dd) * 0.008;
         }
-        if (dd < p.r + 10 && spd < 0.7) {
+        if (dd < p.r + 14 && spd < 0.8) {
           e.state = 'landed';
           e.landAngle = Math.atan2(e.y - p.y, e.x - p.x);
           e.landTimer = 160;   // time to plant the flag — shoot them before it's up!
@@ -1638,6 +1796,7 @@ function updateEnemies() {
           if (neutral.length > 0) {
             e.targetPlanet = neutral[Math.floor(Math.random() * neutral.length)];
             e.state = 'approach';
+            e.approachTimer = 0;
           }
         }
       }
@@ -1825,7 +1984,7 @@ function damageStructure(p, type, dmg, hitX, hitY) {
   spawnPart(hitX, hitY, p.owner === 'player' ? '#2adf6e' : CONFIG.factions[p.owner].color, 6);
   if (s.hp <= 0) {
     delete p.structures[type];
-    spawnPart(hitX, hitY, '#e87030', 25);
+    explode(hitX, hitY, '#e87030', false);
     const ownerLabel = p.owner === 'player' ? 'Your' : CONFIG.factions[p.owner].label;
     flashMsg(ownerLabel + ' ' + STRUCTS[type].name + ' on ' + p.name + ' destroyed!', 2200);
 
@@ -1931,10 +2090,12 @@ function updateBullets() {
         }
         continue;
       }
+      // Player bullets (b.isEnemy false) hit enemy drones; enemy bullets hit player drones
       for (const d of drones) {
-        if (dist(b, d) < 8) {
+        const hostile = (d.owner === 'player') === b.isEnemy;
+        if (hostile && dist(b, d) < 8) {
           d.hp -= 15; b.life = 0;
-          spawnPart(d.x, d.y, '#7ecfff', 8);
+          spawnPart(d.x, d.y, d.owner === 'player' ? '#7ecfff' : CONFIG.factions[d.owner].color, 8);
           break;
         }
       }
@@ -1944,7 +2105,7 @@ function updateBullets() {
           e.hull -= 15; b.life = 0;
           spawnPart(e.x, e.y, '#e8b030', 12);
           if (e.hull <= 0) {
-            spawnPart(e.x, e.y, CONFIG.factions[e.faction].color, 30);
+            explode(e.x, e.y, CONFIG.factions[e.faction].color, true);
             score += 150;
             credits += 15;
             e.hull = -999;
@@ -1967,6 +2128,7 @@ function updateParticles() {
     p.x += p.vx; p.y += p.vy;
     p.vx *= 0.96; p.vy *= 0.96;
     p.life -= p.decay;
+    if (p.ring) p.r += 3.2;
   }
   particles = particles.filter(p => p.life > 0);
 }
@@ -2054,11 +2216,12 @@ function updateCamera() {
 }
 
 function update() {
-  if (gameState !== 'playing' || shopOpen) return;
+  if (gameState === 'paused' || gameState !== 'playing' || shopOpen) return;
   updateOrbits();
   handleInput();
   updateShip();
   updateRespawn();
+  updateAceRespawn();
   updateMissiles();
   updateMaterials();
   updateProduction();
@@ -2167,13 +2330,14 @@ function drawFreighter(f) {
 function drawDrone(d) {
   if (!onScreen(d.x, d.y)) return;
   const s = worldToScreen(d.x, d.y);
+  const col = d.owner === 'player' ? '#7ecfff' : CONFIG.factions[d.owner].color;
   ctx.save();
-  ctx.strokeStyle = '#7ecfff';
+  ctx.strokeStyle = col;
   ctx.lineWidth = 1.2;
   ctx.strokeRect(s.x - 4, s.y - 4, 8, 8);
   ctx.beginPath();
   ctx.arc(s.x, s.y, 1.5, 0, Math.PI * 2);
-  ctx.fillStyle = '#7ecfff';
+  ctx.fillStyle = col;
   ctx.fill();
   ctx.restore();
 }
@@ -2413,7 +2577,13 @@ function drawDials() {
 
 function draw() {
   const vz = vzoom();
-  ctx.setTransform(vz, 0, 0, vz, 0, 0);
+  let shx = 0, shy = 0;
+  if (shake > 0.3) {
+    shx = (Math.random() - 0.5) * shake;
+    shy = (Math.random() - 0.5) * shake;
+    shake *= 0.86;
+  } else shake = 0;
+  ctx.setTransform(vz, 0, 0, vz, shx, shy);
   ctx.fillStyle = '#07090f';
   ctx.fillRect(0, 0, viewW(), viewH());
 
@@ -2474,14 +2644,22 @@ function draw() {
   for (const e of enemies) drawEnemy(e);
 
   for (const p of particles) {
-    if (!onScreen(p.x, p.y, 10)) continue;
+    if (!onScreen(p.x, p.y, 40)) continue;
     const s = worldToScreen(p.x, p.y);
     ctx.save();
-    ctx.globalAlpha = p.life;
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, p.r, 0, Math.PI * 2);
-    ctx.fillStyle = p.color;
-    ctx.fill();
+    ctx.globalAlpha = Math.max(0, p.life);
+    if (p.ring) {
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 2 * p.life;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, p.r, 0, Math.PI * 2);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = p.color;
+      ctx.fill();
+    }
     ctx.restore();
   }
 
@@ -2505,6 +2683,19 @@ function draw() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
   if (gameState === 'won' || gameState === 'dead') drawEndScreen();
+  if (gameState === 'paused') {
+    ctx.save();
+    ctx.fillStyle = 'rgba(6, 10, 18, 0.6)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#7ecfff';
+    ctx.font = '28px monospace';
+    ctx.fillText('PAUSED', W / 2, H / 2);
+    ctx.font = '13px monospace';
+    ctx.fillStyle = '#8ab4d4';
+    ctx.fillText('press P to resume', W / 2, H / 2 + 26);
+    ctx.restore();
+  }
 
   drawRadar();
   drawDials();
